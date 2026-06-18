@@ -1,0 +1,13 @@
+# Entorno virtual y cachés
+.venv/
+__pycache__/
+*.pyc
+
+# Secretos — NUNCA subir la API key al repo
+.streamlit/secrets.toml
+
+# Entregables pesados / generados (opcional)
+*.zip
+
+# Sistema
+.DS_Store
