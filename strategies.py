@@ -24,6 +24,14 @@ import pandas as pd
 RF_ANUAL_DEFAULT = 0.045
 TRADING_DAYS = 252
 
+# Mensaje cuando el rango elegido es demasiado corto para la estrategia.
+SHORT_PERIOD_MSG = ("Período insuficiente para esta estrategia. "
+                    "Elegí un rango más largo (5A o MÁX) en el sidebar.")
+
+
+class InsufficientData(ValueError):
+    """Se levanta cuando no hay suficientes días para correr el backtest."""
+
 
 # ════════════════════════════════════════════════════════════════════════════════
 # MÉTRICAS (Slide 28)
@@ -150,15 +158,21 @@ def backtest_sma_lma(portfolio: pd.Series, cost: float = 0.0015,
     """
     df = pd.DataFrame({"Portfolio": portfolio.values}, index=portfolio.index)
     insample = int(len(df) * is_frac)
+    # Necesitamos que la ventana larga entre tanto en train como en test.
+    min_ma2 = min(ma2_range)
+    if insample <= min_ma2 + 5 or (len(df) - insample) <= min_ma2 + 5:
+        raise InsufficientData(SHORT_PERIOD_MSG)
     df_train, df_test = df[:insample].copy(), df[insample:].copy()
 
     grid = []
     for ma1 in ma1_range:
         for ma2 in ma2_range:
-            if ma1 < ma2:
+            if ma1 < ma2 and ma2 < insample:
                 grid.append({"MA1": ma1, "MA2": ma2,
                              "ret": _bt_sma_lma_total_return(df_train, ma1, ma2, cost)})
     grid_df = pd.DataFrame(grid)
+    if grid_df.empty:
+        raise InsufficientData(SHORT_PERIOD_MSG)
     best = grid_df.sort_values("ret", ascending=False).iloc[0]
     ma1_opt, ma2_opt = int(best["MA1"]), int(best["MA2"])
 
@@ -166,6 +180,8 @@ def backtest_sma_lma(portfolio: pd.Series, cost: float = 0.0015,
     d["SMA"] = d["Portfolio"].rolling(ma1_opt).mean()
     d["LMA"] = d["Portfolio"].rolling(ma2_opt).mean()
     d = d.dropna()
+    if len(d) < 10:
+        raise InsufficientData(SHORT_PERIOD_MSG)
     d["SIGNAL"] = np.where(d["SMA"] > d["LMA"], 1, -1)
     d["SIGNAL"] = d["SIGNAL"].shift(1)
     d["RETURN"] = np.log(d["Portfolio"]).diff().fillna(0)
@@ -218,6 +234,8 @@ def backtest_rsi(portfolio: pd.Series, window: int = 14,
     df = pd.DataFrame({"Portfolio": portfolio.values}, index=portfolio.index)
     insample = int(len(df) * is_frac)
     d = df[insample:].dropna().copy()
+    if len(d) < window + 10:
+        raise InsufficientData(SHORT_PERIOD_MSG)
     d["RSI"] = compute_rsi(d["Portfolio"], window=window)
 
     position, signals = 0, []
@@ -269,6 +287,8 @@ def backtest_momentum(portfolio: pd.Series, window: int = 126,
     df = pd.DataFrame({"Portfolio": portfolio.values}, index=portfolio.index)
     insample = int(len(df) * is_frac)
     d = df[insample:].copy()
+    if len(d) < window + 10:
+        raise InsufficientData(SHORT_PERIOD_MSG)
     d["MOMENTUM"] = d["Portfolio"].pct_change(window)
     d["SIGNAL_RAW"] = 0
     d.loc[d["MOMENTUM"] > 0, "SIGNAL_RAW"] = 1
@@ -312,6 +332,8 @@ def backtest_rebalanceo(adj_close: pd.DataFrame, weights: np.ndarray,
     returns = adj_close.pct_change().dropna()
     insample = int(len(returns) * is_frac)
     rt = returns[insample:].copy()
+    if len(rt) < 30:
+        raise InsufficientData(SHORT_PERIOD_MSG)
     rt.index = pd.to_datetime(rt.index)
 
     holdings = pd.DataFrame(index=rt.index, columns=tickers, dtype=float)
@@ -395,6 +417,8 @@ def backtest_ml(adj_close: pd.DataFrame, weights: np.ndarray,
     y = (returns.sum(axis=1) > 0).astype(int).shift(-1).dropna()
     common = X.index.intersection(y.index)
     X, y = X.loc[common], y.loc[common]
+    if len(X) <= window + 20:
+        raise InsufficientData(SHORT_PERIOD_MSG)
 
     y_pred, y_true, strat_rets = [], [], []
     for start in range(0, len(X) - window):

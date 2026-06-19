@@ -1034,58 +1034,50 @@ with st.sidebar:
     )
 
     st.markdown("---")
-    st.markdown("**RANGE**")
-    range_mode = st.radio(
-        "Mode", ["Preset", "Custom"], horizontal=True,
-        label_visibility="collapsed",
-    )
+    st.markdown("**PERÍODO DE ESTUDIO**")
+    st.caption("Aplica a TODOS los tabs: Market · Technical · Theory · Portfolio · Risk · Strategy Lab.")
 
     end_date = datetime.now()
-    period_map = {
-        "1M": 30, "3M": 90, "6M": 180,
-        "1Y": 365, "2Y": 365 * 2, "5Y": 365 * 5, "10Y": 365 * 10,
+    # Presets estilo terminal. Días hacia atrás (YTD se calcula aparte; MÁX = ~30 años).
+    _PRESETS = {
+        "1M": 30, "6M": 182, "YTD": None, "1A": 365, "2A": 730,
+        "5A": 365 * 5, "10A": 365 * 10, "MÁX": 365 * 30,
     }
+    period_choice = st.segmented_control(
+        "Período", list(_PRESETS.keys()), default="5A",
+        label_visibility="collapsed", key="period_seg",
+    ) or "5A"
 
-    if range_mode == "Preset":
-        period_choice = st.selectbox(
-            "Period",
-            ["1M", "3M", "6M", "1Y", "2Y", "5Y", "10Y", "YTD"],
-            index=4,
-            label_visibility="collapsed",
-        )
-        if period_choice == "YTD":
-            start_date = datetime(end_date.year, 1, 1)
-        else:
-            start_date = end_date - timedelta(days=period_map[period_choice])
+    if period_choice == "YTD":
+        start_date = datetime(end_date.year, 1, 1)
     else:
-        # Custom: el usuario elige las dos puntas
-        col_d1, col_d2 = st.columns(2)
-        with col_d1:
-            start_date_input = st.date_input(
-                "Start", value=(end_date - timedelta(days=365 * 2)).date(),
-                min_value=datetime(1970, 1, 1).date(),
-                max_value=end_date.date(),
-            )
-        with col_d2:
-            end_date_input = st.date_input(
-                "End", value=end_date.date(),
-                min_value=datetime(1970, 1, 1).date(),
-                max_value=end_date.date(),
-            )
-        start_date = datetime.combine(start_date_input, datetime.min.time())
-        end_date = datetime.combine(end_date_input, datetime.min.time())
-        if start_date >= end_date:
-            st.error("Start date must be before end date.")
+        start_date = end_date - timedelta(days=_PRESETS[period_choice])
 
-    interval_choice = st.selectbox(
-        "Interval",
-        ["1m", "5m", "15m", "30m", "1h", "1d", "1wk"],
-        index=5,
-        help="Intraday intervals (1m/5m/...) load only the last few days due to Yahoo limits.",
-        label_visibility="collapsed",
-    )
+    # Rango a medida + intervalo de velas (plegado para no saturar)
+    with st.expander("Rango a medida · intervalo de velas", expanded=False):
+        use_custom = st.checkbox("Usar fechas a medida", value=False, key="use_custom_range")
+        if use_custom:
+            cda, cdb = st.columns(2)
+            with cda:
+                _sd = st.date_input("Desde", value=start_date.date(),
+                                    min_value=datetime(1970, 1, 1).date(),
+                                    max_value=end_date.date(), key="cr_start")
+            with cdb:
+                _ed = st.date_input("Hasta", value=end_date.date(),
+                                    min_value=datetime(1970, 1, 1).date(),
+                                    max_value=end_date.date(), key="cr_end")
+            start_date = datetime.combine(_sd, datetime.min.time())
+            end_date = datetime.combine(_ed, datetime.min.time())
+            if start_date >= end_date:
+                st.error("La fecha de inicio debe ser anterior a la de fin.")
+        interval_choice = st.selectbox(
+            "Intervalo de velas",
+            ["1m", "5m", "15m", "30m", "1h", "1d", "1wk"], index=5,
+            help="Los intervalos intradía (1m/5m/...) solo cargan los últimos días por límites de Yahoo.",
+            key="interval_sel",
+        )
 
-    st.caption(f"Data from **{start_date.date()}** to **{end_date.date()}**")
+    st.caption(f"Datos del **{start_date.date()}** al **{end_date.date()}** · intervalo **{interval_choice}**")
 
     st.markdown("---")
     st.caption(f"Session: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -2421,7 +2413,7 @@ with tab_risk:
     # ═══ VaR / CVaR ═══════════════════════════════════════════════════════
     with sub_var:
         st.markdown("##### VALUE AT RISK · PARAMÉTRICO · HISTÓRICO · MONTE CARLO")
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3 = st.columns(3)
         with c1:
             var_tickers = st.multiselect(
                 "Activos (cartera)", options=list(tickers),
@@ -2431,20 +2423,17 @@ with tab_risk:
         with c3:
             capital = st.number_input("Capital (USD)", min_value=1000.0,
                                       value=1_000_000.0, step=10000.0, key="var_cap")
-        with c4:
-            var_period = st.selectbox("Historia", ["6mo", "1y", "2y", "5y"], index=1, key="var_per")
         dias = st.slider("Horizonte (días de tenencia)", 1, 20, 1, key="var_dias")
+        st.caption(f"Historia del **{start_date.date()}** al **{end_date.date()}** "
+                   f"(período global del sidebar).")
 
         if len(var_tickers) < 2:
             st.warning("Elegí al menos 2 activos para construir la cartera.")
         else:
-            _end = datetime.now()
-            _days = {"6mo": 182, "1y": 365, "2y": 730, "5y": 1825}[var_period]
-            _start = _end - timedelta(days=_days)
             with st.spinner("Descargando historia y calculando VaR..."):
                 adjm = fetch_adjclose_matrix(tuple(var_tickers),
-                                             _start.strftime("%Y-%m-%d"),
-                                             _end.strftime("%Y-%m-%d"))
+                                             start_date.strftime("%Y-%m-%d"),
+                                             end_date.strftime("%Y-%m-%d"))
             if adjm.empty or adjm.shape[1] < 2:
                 st.error("No se pudo descargar historia suficiente para estos activos.")
             else:
@@ -2592,20 +2581,17 @@ with tab_risk:
 # ──────────────────────────────────────────────────────────────────────────────
 with tab_lab:
     st.markdown("##### BACKTESTING LAB · TREND · MEAN REVERSION · MOMENTUM · REBALANCEO · ML")
-    cfg1, cfg2, cfg3, cfg4 = st.columns([2, 1, 1, 1])
+    cfg1, cfg2 = st.columns([3, 1])
     with cfg1:
         lab_tickers = st.multiselect(
             "Universo", options=sorted(set(list(tickers) + uni.US_LARGECAPS[:30])),
             default=["AAPL", "MSFT", "GOOGL", "AMZN", "META"], key="lab_tk")
     with cfg2:
-        lab_start = st.date_input("Desde", value=datetime(2015, 1, 1).date(),
-                                  min_value=datetime(2001, 1, 1).date(), key="lab_start")
-    with cfg3:
-        lab_end = st.date_input("Hasta", value=datetime(2022, 12, 31).date(), key="lab_end")
-    with cfg4:
         cost_bps = st.number_input("Costo (bps/trade)", min_value=0.0, value=15.0,
                                    step=5.0, key="lab_cost")
     cost = cost_bps / 10000.0
+    st.caption(f"Período del **{start_date.date()}** al **{end_date.date()}** (global del sidebar). "
+               f"Para backtests robustos conviene 5A o MÁX — con períodos cortos hay pocas operaciones.")
 
     strat = st.radio("Estrategia",
                      ["Trend (SMA/LMA)", "Mean Reversion (RSI)", "Momentum",
@@ -2617,8 +2603,8 @@ with tab_lab:
     else:
         with st.spinner("Descargando precios..."):
             adj = fetch_adjclose_matrix(tuple(lab_tickers),
-                                        lab_start.strftime("%Y-%m-%d"),
-                                        lab_end.strftime("%Y-%m-%d"))
+                                        start_date.strftime("%Y-%m-%d"),
+                                        end_date.strftime("%Y-%m-%d"))
         if adj.empty:
             st.error("No se pudo descargar historia para estos activos / rango.")
         else:
@@ -2676,10 +2662,18 @@ with tab_lab:
                                   xaxis_title="Rendimiento final (%)", yaxis_title="Frecuencia")
                 return fig
 
+            def _run(fn, *a, **k):
+                """Corre un backtest; si el período es muy corto, avisa y detiene el tab."""
+                try:
+                    return fn(*a, **k)
+                except stg.InsufficientData as e:
+                    st.warning(f"⏳ {e}")
+                    st.stop()
+
             # ── TREND ───────────────────────────────────────────────────
             if strat == "Trend (SMA/LMA)":
                 with st.spinner("Optimizando in-sample y evaluando out-of-sample..."):
-                    r = stg.backtest_sma_lma(port, cost=cost)
+                    r = _run(stg.backtest_sma_lma, port, cost=cost)
                 ma1, ma2 = r["params"]
                 k1, k2, k3 = st.columns(3)
                 k1.metric("SMA / LMA óptimos", f"{ma1} / {ma2}")
@@ -2702,8 +2696,8 @@ with tab_lab:
                 osold = cB.number_input("Sobreventa", 10, 45, 30, key="rsi_os")
                 obought = cC.number_input("Sobrecompra", 55, 90, 70, key="rsi_ob")
                 with st.spinner("Backtest RSI..."):
-                    r = stg.backtest_rsi(port, window=int(rsi_win), oversold=int(osold),
-                                         overbought=int(obought), cost=cost)
+                    r = _run(stg.backtest_rsi, port, window=int(rsi_win), oversold=int(osold),
+                             overbought=int(obought), cost=cost)
                 k1, k2, k3 = st.columns(3)
                 k1.metric("Operaciones", r["n_trades"])
                 k2.metric("Días en mercado", f"{r['days_in']}/{r['n_total']}")
@@ -2727,7 +2721,7 @@ with tab_lab:
             elif strat == "Momentum":
                 mwin = st.slider("Ventana de momentum (días hábiles)", 21, 252, 126, key="mom_w")
                 with st.spinner("Backtest Momentum..."):
-                    r = stg.backtest_momentum(port, window=int(mwin), cost=cost)
+                    r = _run(stg.backtest_momentum, port, window=int(mwin), cost=cost)
                 k1, k2 = st.columns(2)
                 k1.metric("Cambios de señal", r["n_trades"])
                 k2.metric("CAGR", f"{r['perf'].iloc[0]['CAGR %']:+.2f}%")
@@ -2752,7 +2746,7 @@ with tab_lab:
                                           key="reb_freq")
                 freq = {"Mensual (ME)": "ME", "Trimestral (QE)": "QE", "Anual (YE)": "YE"}[freq_label]
                 with st.spinner("Simulando rebalanceo..."):
-                    r = stg.backtest_rebalanceo(adj, wts, freq=freq, cost=cost)
+                    r = _run(stg.backtest_rebalanceo, adj, wts, freq=freq, cost=cost)
                 k1, k2 = st.columns(2)
                 k1.metric("Rebalanceos ejecutados", r["n_rebal"])
                 k2.metric("Costos acumulados", f"{r['cost_acum'] / r['capital'] * 100:.3f}%")
@@ -2793,10 +2787,10 @@ with tab_lab:
                 if st.session_state.get("_ml_go"):
                     with st.spinner(f"Entrenando {model_choice} en walk-forward… "
                                     "(puede tardar; quedará cacheado)"):
-                        r = run_ml_backtest(tuple(lab_tickers),
-                                            lab_start.strftime("%Y-%m-%d"),
-                                            lab_end.strftime("%Y-%m-%d"),
-                                            model_choice, int(wf_win), cost)
+                        r = _run(run_ml_backtest, tuple(lab_tickers),
+                                 start_date.strftime("%Y-%m-%d"),
+                                 end_date.strftime("%Y-%m-%d"),
+                                 model_choice, int(wf_win), cost)
                     if r is None:
                         st.error("No hay datos suficientes.")
                     else:
