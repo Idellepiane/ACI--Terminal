@@ -1199,12 +1199,24 @@ live_header()
 @st.cache_data(ttl=3600, show_spinner=False)
 def run_ml_backtest(tickers: tuple[str, ...], start: str, end: str,
                     model_choice: str, window: int, cost: float):
-    """Walk-forward ML cacheado (es lo más pesado: reentrena ~miles de modelos)."""
+    """Walk-forward ML (timing on/off) cacheado — reentrena ~miles de modelos."""
     adj = fetch_adjclose_matrix(tickers, start, end)
     if adj.empty or adj.shape[1] == 0:
         return None
     w = np.array([1 / adj.shape[1]] * adj.shape[1])
     return stg.backtest_ml(adj, w, model_choice=model_choice, window=window, cost=cost)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def run_ml_weights_backtest(tickers: tuple[str, ...], start: str, end: str,
+                            model_choice: str, window: int, cost: float,
+                            umbral: float, max_peso: float | None):
+    """Walk-forward ML con pesos dinámicos (un modelo por activo) cacheado."""
+    adj = fetch_adjclose_matrix(tickers, start, end)
+    if adj.empty or adj.shape[1] < 2:
+        return None
+    return stg.backtest_ml_weights(adj, model_choice=model_choice, window=window,
+                                   cost=cost, umbral=umbral, max_peso=max_peso)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -2776,58 +2788,128 @@ with tab_lab:
 
             # ── MACHINE LEARNING ────────────────────────────────────────
             elif strat == "Machine Learning":
-                cA, cB = st.columns(2)
-                model_choice = cA.selectbox("Modelo", stg.ML_MODELS, index=1, key="ml_model")
-                wf_win = cB.slider("Ventana Walk-Forward (días)", 60, 504, 252, step=21, key="ml_win")
-                st.caption("Walk-forward: reentrena el modelo cada día con los últimos N días "
-                           "y predice el siguiente. XGBoost/SVM pueden tardar ~1 min la primera vez "
-                           "(después queda cacheado).")
-                if st.button("▶ CORRER WALK-FORWARD", key="ml_run", use_container_width=True):
-                    st.session_state["_ml_go"] = True
-                if st.session_state.get("_ml_go"):
-                    with st.spinner(f"Entrenando {model_choice} en walk-forward… "
-                                    "(puede tardar; quedará cacheado)"):
-                        r = _run(run_ml_backtest, tuple(lab_tickers),
-                                 start_date.strftime("%Y-%m-%d"),
-                                 end_date.strftime("%Y-%m-%d"),
-                                 model_choice, int(wf_win), cost)
-                    if r is None:
-                        st.error("No hay datos suficientes.")
+                ml_mode = st.radio(
+                    "Modo de ML",
+                    ["Timing (señal on/off, pesos fijos)",
+                     "Pesos dinámicos (rotación cross-sectional)"],
+                    horizontal=True, key="ml_mode",
+                    help="Timing: una señal 0/1 sobre toda la cartera. "
+                         "Pesos dinámicos: un modelo POR ACCIÓN decide qué tener y con qué peso.")
+
+                # ═══ MODO 1 · TIMING (on/off) ═══════════════════════════════
+                if ml_mode.startswith("Timing"):
+                    cA, cB = st.columns(2)
+                    model_choice = cA.selectbox("Modelo", stg.ML_MODELS, index=1, key="ml_model")
+                    wf_win = cB.slider("Ventana Walk-Forward (días)", 60, 504, 252, step=21, key="ml_win")
+                    st.caption("Reentrena el modelo cada día con los últimos N días y predice el "
+                               "siguiente; opera la cartera entera o va a cash. XGBoost/SVM tardan "
+                               "~1 min la primera vez (después queda cacheado).")
+                    if st.button("▶ CORRER WALK-FORWARD", key="ml_run", use_container_width=True):
+                        st.session_state["_ml_go"] = True
+                    if st.session_state.get("_ml_go"):
+                        with st.spinner(f"Entrenando {model_choice} en walk-forward…"):
+                            r = _run(run_ml_backtest, tuple(lab_tickers),
+                                     start_date.strftime("%Y-%m-%d"),
+                                     end_date.strftime("%Y-%m-%d"),
+                                     model_choice, int(wf_win), cost)
+                        if r is None:
+                            st.error("No hay datos suficientes.")
+                        else:
+                            k1, k2, k3, k4 = st.columns(4)
+                            k1.metric("Accuracy", f"{r['acc']:.3f}")
+                            k2.metric("CAGR ML", f"{r['perf'].iloc[0]['CAGR %']:+.2f}%")
+                            k3.metric("Cambios posición", r["n_trades"])
+                            k4.metric("Días invertido", f"{r['days_in']}/{r['n_total']}")
+                            _show_perf(r["perf"])
+                            st.plotly_chart(_equity_dd(r["df"], r["dd"], "CUM_ML", "CUM_BH", r["label"]),
+                                            use_container_width=True, config=PLOTLY_CONFIG)
+                            cc1, cc2 = st.columns(2)
+                            with cc1:
+                                st.markdown("**MATRIZ DE CONFUSIÓN**")
+                                cm = r["cm"]
+                                fig_cm = go.Figure(go.Heatmap(
+                                    z=cm, x=["Pred. Bajada", "Pred. Subida"],
+                                    y=["Real Bajada", "Real Subida"], colorscale="Blues",
+                                    text=cm, texttemplate="%{text}", showscale=False))
+                                fig_cm.update_layout(**PLOTLY_LAYOUT, height=340)
+                                st.plotly_chart(fig_cm, use_container_width=True, config=PLOTLY_CONFIG)
+                            with cc2:
+                                if r["importances"] is not None:
+                                    st.markdown("**IMPORTANCIA DE FEATURES**")
+                                    imp = r["importances"]
+                                    fig_i = go.Figure(go.Bar(x=imp.values, y=list(imp.index),
+                                                             orientation="h", marker_color=GREEN))
+                                    fig_i.update_layout(**PLOTLY_LAYOUT, height=340, xaxis_title="Importancia")
+                                    st.plotly_chart(fig_i, use_container_width=True, config=PLOTLY_CONFIG)
+                                else:
+                                    st.info("SVM no expone feature_importances_.")
+                            st.markdown("**RIESGO SIMULADO — MONTE CARLO**")
+                            st.plotly_chart(_mc_hist(r["mc"], r["label"]),
+                                            use_container_width=True, config=PLOTLY_CONFIG)
                     else:
-                        k1, k2, k3, k4 = st.columns(4)
-                        k1.metric("Accuracy", f"{r['acc']:.3f}")
-                        k2.metric("CAGR ML", f"{r['perf'].iloc[0]['CAGR %']:+.2f}%")
-                        k3.metric("Cambios posición", r["n_trades"])
-                        k4.metric("Días invertido", f"{r['days_in']}/{r['n_total']}")
-                        _show_perf(r["perf"])
-                        st.plotly_chart(_equity_dd(r["df"], r["dd"], "CUM_ML", "CUM_BH", r["label"]),
-                                        use_container_width=True, config=PLOTLY_CONFIG)
-                        cc1, cc2 = st.columns(2)
-                        with cc1:
-                            st.markdown("**MATRIZ DE CONFUSIÓN**")
-                            cm = r["cm"]
-                            fig_cm = go.Figure(go.Heatmap(
-                                z=cm, x=["Pred. Bajada", "Pred. Subida"],
-                                y=["Real Bajada", "Real Subida"], colorscale="Blues",
-                                text=cm, texttemplate="%{text}", showscale=False))
-                            fig_cm.update_layout(**PLOTLY_LAYOUT, height=340)
-                            st.plotly_chart(fig_cm, use_container_width=True, config=PLOTLY_CONFIG)
-                        with cc2:
-                            if r["importances"] is not None:
-                                st.markdown("**IMPORTANCIA DE FEATURES**")
-                                imp = r["importances"]
-                                fig_i = go.Figure(go.Bar(x=imp.values, y=list(imp.index),
-                                                         orientation="h", marker_color=GREEN))
-                                fig_i.update_layout(**PLOTLY_LAYOUT, height=340,
-                                                    xaxis_title="Importancia")
-                                st.plotly_chart(fig_i, use_container_width=True, config=PLOTLY_CONFIG)
-                            else:
-                                st.info("SVM no expone feature_importances_.")
-                        st.markdown("**RIESGO SIMULADO — MONTE CARLO**")
-                        st.plotly_chart(_mc_hist(r["mc"], r["label"]),
-                                        use_container_width=True, config=PLOTLY_CONFIG)
+                        st.info("Configurá el modelo y la ventana, y tocá **CORRER WALK-FORWARD**.")
+
+                # ═══ MODO 2 · PESOS DINÁMICOS (rotación) ════════════════════
                 else:
-                    st.info("Configurá el modelo y la ventana, y tocá **CORRER WALK-FORWARD**.")
+                    if len(lab_tickers) < 2:
+                        st.warning("Este modo necesita al menos 2 activos para rotar entre ellos.")
+                    else:
+                        wc1, wc2, wc3, wc4 = st.columns(4)
+                        w_model = wc1.selectbox("Modelo por activo", stg.ML_WEIGHT_MODELS,
+                                                index=1, key="mlw_model")
+                        wf_win = wc2.slider("Ventana WF (días)", 60, 504, 252, step=21, key="mlw_win")
+                        umbral = wc3.slider("Umbral P(sube)", 0.50, 0.70, 0.50, step=0.01, key="mlw_umb")
+                        max_peso = wc4.slider("Cap por activo", 0.20, 1.0, 0.40, step=0.05, key="mlw_cap")
+                        st.caption("Entrena un modelo POR ACCIÓN cada día → P(sube). Arma la cartera por "
+                                   "convicción (∝ p−0.5), con cap por activo, y rota día a día. Costo por "
+                                   "turnover real. Es lo más pesado (N acciones × N días de modelos).")
+                        if st.button("▶ CORRER ROTACIÓN ML", key="mlw_run", use_container_width=True):
+                            st.session_state["_mlw_go"] = True
+                        if st.session_state.get("_mlw_go"):
+                            with st.spinner(f"Entrenando {w_model} por activo en walk-forward… "
+                                            "(puede tardar 1-3 min; quedará cacheado)"):
+                                r = _run(run_ml_weights_backtest, tuple(lab_tickers),
+                                         start_date.strftime("%Y-%m-%d"),
+                                         end_date.strftime("%Y-%m-%d"),
+                                         w_model, int(wf_win), cost, float(umbral),
+                                         float(max_peso))
+                            if r is None:
+                                st.error("No hay datos suficientes.")
+                            else:
+                                k1, k2, k3, k4 = st.columns(4)
+                                k1.metric("CAGR", f"{r['perf'].iloc[0]['CAGR %']:+.2f}%")
+                                k2.metric("Sharpe", f"{r['perf'].iloc[0]['Sharpe']:.2f}")
+                                k3.metric("Turnover diario", f"{r['turnover_medio']*100:.0f}%")
+                                k4.metric("% invertido medio", f"{r['invertido_medio']*100:.0f}%")
+                                _show_perf(r["perf"])
+                                st.plotly_chart(_equity_dd(r["df"], r["dd"], "CUM_ML", "CUM_BH", r["label"]),
+                                                use_container_width=True, config=PLOTLY_CONFIG)
+                                st.markdown("**COMPOSICIÓN DE LA CARTERA EN EL TIEMPO · rotación guiada por ML**")
+                                pf = r["pesos_df"]
+                                fig_w = go.Figure()
+                                for col in pf.columns:
+                                    fig_w.add_trace(go.Scatter(
+                                        x=pf.index, y=pf[col] * 100, mode="lines",
+                                        stackgroup="one", name=col, line=dict(width=0.5)))
+                                fig_w.add_trace(go.Scatter(
+                                    x=r["df"].index, y=r["df"]["Invertido"] * 100, mode="lines",
+                                    name="% invertido", line=dict(color="#fff", width=1, dash="dot")))
+                                fig_w.update_layout(**PLOTLY_LAYOUT, height=420,
+                                                    yaxis_title="Peso (%)", yaxis_range=[0, 100])
+                                st.plotly_chart(fig_w, use_container_width=True, config=PLOTLY_CONFIG)
+                                cc1, cc2 = st.columns([1, 1.4])
+                                with cc1:
+                                    st.markdown("**PESO MEDIO POR ACTIVO (en cartera)**")
+                                    pm = r["peso_medio"].sort_values(ascending=False)
+                                    st.dataframe(pm.rename("Peso medio %").to_frame(),
+                                                 use_container_width=True)
+                                    st.caption(f"Costo total acumulado: {r['costo_total']*100:.2f}% del capital.")
+                                with cc2:
+                                    st.markdown("**RIESGO SIMULADO — MONTE CARLO**")
+                                    st.plotly_chart(_mc_hist(r["mc"], r["label"]),
+                                                    use_container_width=True, config=PLOTLY_CONFIG)
+                        else:
+                            st.info("Configurá los parámetros y tocá **CORRER ROTACIÓN ML**.")
 
 
 # ════════════════════════════════════════════════════════════════════════════════

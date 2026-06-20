@@ -472,3 +472,140 @@ def backtest_ml(adj_close: pd.DataFrame, weights: np.ndarray,
                                         output_dict=True, zero_division=0),
         "label": f"ML {model_choice}",
     }
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# ESTRATEGIA 5-bis · ML CON OPTIMIZACIÓN DE PESOS (rotación cross-sectional)
+# --------------------------------------------------------------------------------
+# A diferencia de backtest_ml (una señal 0/1 sobre toda la cartera), acá se
+# entrena UN modelo POR ACTIVO que predice P(ese activo sube mañana). Cada día
+# se arma la cartera: selección (p>umbral), peso por convicción (∝ p−0.5), cap
+# por activo (water-filling) y normalización long-only. Si nada sube → cash.
+# Costo por TURNOVER real (cuánto se movió cada peso). (BT_Machine_Learning_III)
+# ════════════════════════════════════════════════════════════════════════════════
+ML_WEIGHT_MODELS = ["DecisionTree", "RandomForest"]
+
+
+def _make_weight_model(choice: str):
+    from sklearn.tree import DecisionTreeClassifier
+    from sklearn.ensemble import RandomForestClassifier
+    if choice == "DecisionTree":
+        return DecisionTreeClassifier(max_depth=4, random_state=42)
+    if choice == "RandomForest":
+        return RandomForestClassifier(n_estimators=25, max_depth=3,
+                                      random_state=42, n_jobs=-1)
+    raise ValueError(f"Modelo no válido: {choice}")
+
+
+def _prob_up(model, x_row) -> float:
+    """P(sube) robusta aunque el train tuviera una sola clase."""
+    if len(model.classes_) == 1:
+        return float(model.classes_[0])
+    idx1 = list(model.classes_).index(1)
+    return float(model.predict_proba(x_row)[0, idx1])
+
+
+def _apply_cap(w: np.ndarray, cap: float | None) -> np.ndarray:
+    """Water-filling: respeta el tope `cap` por activo renormalizando el exceso."""
+    if cap is None:
+        return w
+    w = w.copy()
+    for _ in range(100):
+        exceso = np.clip(w - cap, 0, None)
+        total = exceso.sum()
+        if total < 1e-12:
+            break
+        w = np.minimum(w, cap)
+        libres = w < cap - 1e-12
+        if not libres.any():
+            break
+        base = w[libres].sum()
+        if base < 1e-12:
+            w[libres] += total / libres.sum()
+        else:
+            w[libres] += total * w[libres] / base
+    return w
+
+
+def _build_weights(probs: np.ndarray, umbral: float, max_peso: float | None) -> np.ndarray:
+    conviccion = np.clip(probs - 0.5, 0, None)
+    seleccion = probs > umbral
+    bruto = np.where(seleccion, conviccion, 0.0)
+    if bruto.sum() < 1e-12:
+        return np.zeros_like(probs)
+    w = bruto / bruto.sum()
+    return _apply_cap(w, max_peso)
+
+
+def backtest_ml_weights(adj_close: pd.DataFrame, model_choice: str = "RandomForest",
+                        window: int = 252, cost: float = 0.0015,
+                        rf: float = RF_ANUAL_DEFAULT, umbral: float = 0.5,
+                        max_peso: float | None = 0.40) -> dict:
+    """
+    Walk-forward con un modelo por activo por día → pesos dinámicos long-only.
+    Costo por turnover. Devuelve métricas, equity, drawdown y la matriz de
+    pesos por activo en el tiempo (para el gráfico de composición/rotación).
+    """
+    tickers = list(adj_close.columns)
+    n = len(tickers)
+    returns = np.log(adj_close / adj_close.shift(1)).dropna()
+
+    X = returns.rolling(window=5).mean().shift(1)
+    Y = (returns > 0).astype(int).shift(-1)
+    data = pd.concat([X.add_prefix("f_"), Y.add_prefix("y_")], axis=1).dropna()
+    X = data[[c for c in data.columns if c.startswith("f_")]]
+    Y = data[[c for c in data.columns if c.startswith("y_")]]
+    R = returns.loc[X.index]
+    if len(X) <= window + 20:
+        raise InsufficientData(SHORT_PERIOD_MSG)
+
+    fechas_oos = X.index[window:]
+    pesos_hist, ret_bruto, turnover = [], [], []
+    w_prev = np.zeros(n)
+
+    for start in range(0, len(X) - window):
+        end = start + window
+        X_train, X_test = X.iloc[start:end], X.iloc[end:end + 1]
+        probs = np.empty(n)
+        for j, tk in enumerate(tickers):
+            m = _make_weight_model(model_choice)
+            m.fit(X_train, Y.iloc[start:end][f"y_{tk}"])
+            probs[j] = _prob_up(m, X_test)
+        w = _build_weights(probs, umbral, max_peso)
+        ret_bruto.append(float(np.dot(w, R.loc[X_test.index[0]].values)))
+        turnover.append(float(np.abs(w - w_prev).sum()))
+        pesos_hist.append(w)
+        w_prev = w
+
+    pesos_hist = np.array(pesos_hist)
+    res = pd.DataFrame(index=fechas_oos)
+    res["Strategy_Gross"] = ret_bruto
+    res["Turnover"] = turnover
+    res["Strategy"] = res["Strategy_Gross"] - res["Turnover"] * cost
+    w_bh = np.array([1.0 / n] * n)
+    res["BuyHold"] = (R.loc[fechas_oos].values * w_bh).sum(axis=1)
+    res["Invertido"] = pesos_hist.sum(axis=1)
+    res["CUM_ML"] = np.exp(res["Strategy"].cumsum())
+    res["CUM_BH"] = np.exp(res["BuyHold"].cumsum())
+    res.index = pd.to_datetime(res.index)
+
+    pesos_df = pd.DataFrame(pesos_hist, index=res.index, columns=tickers)
+
+    _, dd = max_drawdown(res["CUM_ML"])
+    perf = pd.DataFrame(
+        [_perf_row(res["Strategy"], res["CUM_ML"]),
+         _perf_row(res["BuyHold"], res["CUM_BH"])],
+        index=[f"ML pesos ({model_choice})", "Buy & Hold equipond."],
+    ).round(2)
+
+    peso_medio = (pesos_df.replace(0, np.nan).mean() * 100).round(1)
+    return {
+        "df": res, "dd": dd, "perf": perf, "pesos_df": pesos_df,
+        "model": model_choice, "window": window,
+        "turnover_medio": float(res["Turnover"].mean()),
+        "costo_total": float((res["Turnover"] * cost).sum()),
+        "invertido_medio": float(res["Invertido"].mean()),
+        "peso_medio": peso_medio, "umbral": umbral, "max_peso": max_peso,
+        "mc": montecarlo_var(res["Strategy"], res["CUM_ML"].iloc[-1]),
+        "label": f"ML pesos ({model_choice})",
+    }
