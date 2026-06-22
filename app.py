@@ -62,7 +62,15 @@ BLOOMBERG_CSS = """
 
     /* --- Background base --- */
     .stApp { background-color: #000000; color: #d97a00; }
-    .main .block-container { padding-top: 0.6rem; padding-bottom: 1rem; max-width: 100%; }
+    /* Contenedor principal a casi ancho completo: menos margen lateral = gráficos más anchos.
+       Cubrimos el selector viejo y el nuevo (stMainBlockContainer) de Streamlit. */
+    .main .block-container,
+    [data-testid="stMainBlockContainer"],
+    [data-testid="stAppViewBlockContainer"] {
+        padding-top: 0.6rem; padding-bottom: 1rem;
+        padding-left: 2rem; padding-right: 2rem;
+        max-width: 100%;
+    }
     [data-testid="stHeader"] { background: rgba(0,0,0,0); height: 0; }
     [data-testid="stToolbar"] { right: 8px; }
 
@@ -1420,7 +1428,7 @@ with tab_market:
             ))
         fig.update_layout(
             **PLOTLY_LAYOUT,
-            height=400,
+            height=480,
         )
         st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
@@ -1435,7 +1443,7 @@ with tab_market:
                 marker=dict(color=[GREEN if v > 0 else RED for v in hm["Cambio %"]]),
                 text=[f"{v:+.2f}%" for v in hm["Cambio %"]], textposition="outside",
             ))
-            fig_hm.update_layout(**PLOTLY_LAYOUT, height=350, yaxis_title="%CHG", showlegend=False)
+            fig_hm.update_layout(**PLOTLY_LAYOUT, height=430, yaxis_title="%CHG", showlegend=False)
             st.plotly_chart(fig_hm, use_container_width=True, config=PLOTLY_CONFIG)
 
 
@@ -1443,7 +1451,8 @@ with tab_market:
 # TAB · ANÁLISIS TÉCNICO
 # ──────────────────────────────────────────────────────────────────────────────
 with tab_tech:
-    col_a, col_b = st.columns([1, 3])
+    # Controles arriba (columna angosta); el gráfico va a ancho COMPLETO debajo.
+    col_a = st.columns([1, 2])[0]
     with col_a:
         st.markdown("##### INDICATOR")
         indicator_name = st.selectbox(
@@ -1467,7 +1476,7 @@ with tab_tech:
             else:
                 params[k] = st.text_input(k, value=str(default))
 
-    with col_b:
+    with st.container():
         st.markdown(f"##### {primary}  ·  {indicator_name.upper()}")
 
         df = history.get(primary)
@@ -1499,7 +1508,7 @@ with tab_tech:
                     fig.add_trace(go.Scatter(x=d.index, y=d["LR_Upper"], name=f"+{params.get('k', 2)}σ", line=dict(color=GREEN, dash="dash")))
                     fig.add_trace(go.Scatter(x=d.index, y=d["LR_Lower"], name=f"-{params.get('k', 2)}σ", line=dict(color=RED, dash="dash"),
                                               fill="tonexty", fillcolor="rgba(255,255,255,0.03)"))
-                fig.update_layout(**PLOTLY_LAYOUT, height=600, xaxis_rangeslider_visible=False)
+                fig.update_layout(**PLOTLY_LAYOUT, height=700, xaxis_rangeslider_visible=False)
                 st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
             elif kind == "oscillator":
@@ -1641,7 +1650,7 @@ with tab_tech:
                 _draw_group(ABC, RED, "Correction A·B·C", symbol="square")
 
                 fig.update_layout(
-                    **PLOTLY_LAYOUT, height=620,
+                    **PLOTLY_LAYOUT, height=700,
                     xaxis_rangeslider_visible=False,
                 )
                 st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
@@ -2428,7 +2437,7 @@ with tab_port:
                                   line=dict(color=ACCENT, width=2.5)))
         fig.add_trace(go.Scatter(x=bench_cum.index, y=bench_cum.values, name="Equal-weight benchmark",
                                   line=dict(color=CYAN, width=1.5, dash="dash")))
-        fig.update_layout(**PLOTLY_LAYOUT, height=400,
+        fig.update_layout(**PLOTLY_LAYOUT, height=460,
                           yaxis_title="Value (base 1.0)")
         st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
@@ -2458,7 +2467,7 @@ with tab_port:
         fig_dd = go.Figure()
         fig_dd.add_trace(go.Scatter(x=dd_series.index, y=dd_series.values * 100,
                                      fill="tozeroy", line=dict(color=RED), name="Drawdown"))
-        fig_dd.update_layout(**PLOTLY_LAYOUT, height=300, yaxis_title="DD %")
+        fig_dd.update_layout(**PLOTLY_LAYOUT, height=380, yaxis_title="DD %")
         st.plotly_chart(fig_dd, use_container_width=True, config=PLOTLY_CONFIG)
 
 
