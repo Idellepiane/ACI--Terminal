@@ -6,6 +6,9 @@ __pycache__/
 # Secretos — NUNCA subir la API key al repo
 .streamlit/secrets.toml
 
+# Watchlist persistida (es local de cada máquina/usuario)
+.watchlist.json
+
 # Entregables pesados / generados (opcional)
 *.zip
 

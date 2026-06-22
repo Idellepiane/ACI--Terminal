@@ -16,6 +16,7 @@ Cómo correrlo:
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -318,6 +319,43 @@ RED = "#ff2050"        # P/L rojo saturado
 CYAN = "#00d4ff"
 PURPLE = "#bf5af2"
 WHITE = "#ffffff"
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# PERSISTENCIA DE LA WATCHLIST  ·  memoria entre sesiones
+# --------------------------------------------------------------------------------
+# Streamlit olvida session_state al cerrar. Para que el dashboard recuerde la
+# última watchlist al reabrirlo, la guardamos en un JSON local junto a app.py.
+# Nota: en local es perfecto (sobrevive reinicios). En Streamlit Cloud el disco
+# es efímero (se resetea al redeploy) y compartido entre visitantes, así que ahí
+# la memoria es "best-effort": si no hay archivo, cae al default de abajo.
+# ════════════════════════════════════════════════════════════════════════════════
+_WATCHLIST_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".watchlist.json")
+_WATCHLIST_DEFAULT = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA"]
+
+
+def _load_watchlist() -> list[str]:
+    try:
+        with open(_WATCHLIST_FILE, encoding="utf-8") as f:
+            wl = json.load(f)
+        if isinstance(wl, list):
+            clean = [str(t).strip().upper() for t in wl if str(t).strip()]
+            return clean if clean else _WATCHLIST_DEFAULT
+    except Exception:
+        pass
+    return list(_WATCHLIST_DEFAULT)
+
+
+def _save_watchlist(wl: list[str]) -> None:
+    try:
+        cur = list(wl)
+        if cur == st.session_state.get("_wl_saved"):
+            return  # evita reescribir el archivo en cada rerun si no cambió
+        with open(_WATCHLIST_FILE, "w", encoding="utf-8") as f:
+            json.dump(cur, f)
+        st.session_state["_wl_saved"] = cur
+    except Exception:
+        pass
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -954,9 +992,11 @@ with st.sidebar:
     st.caption("v1.0")
     st.markdown("---")
 
-    # ── Estado de la watchlist (persistente entre reruns) ─────────────────
+    # ── Estado de la watchlist (persistente entre reruns Y entre sesiones) ──
+    # Se guarda en un archivito local (.watchlist.json) para que, al reabrir el
+    # dashboard, aparezca la última selección que dejaste — no el default fijo.
     if "watchlist" not in st.session_state:
-        st.session_state.watchlist = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA"]
+        st.session_state.watchlist = _load_watchlist()
 
     # ── 1) Selección rápida desde universos curados ─────────────────────────
     st.markdown("**UNIVERSE**")
@@ -1020,7 +1060,11 @@ with st.sidebar:
     )
     if st.button("CLEAR", use_container_width=True):
         st.session_state.watchlist = []
+        _save_watchlist([])
         st.rerun()
+
+    # Persistimos la selección actual para la próxima vez que abras el dashboard.
+    _save_watchlist(st.session_state.watchlist)
 
     tickers = tuple(t.strip().upper() for t in st.session_state.watchlist if t.strip())
 
@@ -1633,6 +1677,8 @@ with tab_tech:
 # TAB · FUNDAMENTALES
 # ──────────────────────────────────────────────────────────────────────────────
 with tab_fund:
+    st.caption("ℹ️ Datos de “foto”: ratios TTM (últimos 12 meses) y estados contables del "
+               "último reporte. **No dependen del período del sidebar** — ese control no afecta este tab.")
     sub1, sub2 = st.tabs(["RATIOS TTM", "STATEMENTS"])
 
     with sub1:
@@ -2602,8 +2648,36 @@ with tab_lab:
         cost_bps = st.number_input("Costo (bps/trade)", min_value=0.0, value=15.0,
                                    step=5.0, key="lab_cost")
     cost = cost_bps / 10000.0
-    st.caption(f"Período del **{start_date.date()}** al **{end_date.date()}** (global del sidebar). "
-               f"Para backtests robustos conviene 5A o MÁX — con períodos cortos hay pocas operaciones.")
+    # ── Ventana de backtest propia (el backtesting tiene necesidades temporales
+    #    distintas: historia larga + múltiples regímenes + control del corte
+    #    in-sample/out-of-sample). Por defecto usa el período global del sidebar.
+    with st.expander("⏱ Ventana de backtest e in-sample/out-of-sample (avanzado)", expanded=False):
+        usar_propio = st.checkbox(
+            "Usar una ventana propia para el backtest (recomendado: historia larga y multi-régimen)",
+            value=False, key="lab_own_window")
+        if usar_propio:
+            wca, wcb = st.columns(2)
+            lab_start_eff = datetime.combine(
+                wca.date_input("Desde (backtest)", value=datetime(2010, 1, 1).date(),
+                               min_value=datetime(2001, 1, 1).date(), key="lab_bt_start"),
+                datetime.min.time())
+            lab_end_eff = datetime.combine(
+                wcb.date_input("Hasta (backtest)", value=end_date.date(),
+                               min_value=datetime(2001, 1, 1).date(), key="lab_bt_end"),
+                datetime.min.time())
+        else:
+            lab_start_eff, lab_end_eff = start_date, end_date
+        is_pct = st.slider(
+            "In-sample (% para entrenar/optimizar; el resto es out-of-sample)",
+            50, 90, 80, step=5, key="lab_isfrac",
+            help="Punto de corte IS/OOS para Trend/RSI/Momentum/Rebalanceo. "
+                 "Las estrategias de Machine Learning usan walk-forward y no este corte.")
+        is_frac = is_pct / 100.0
+
+    _src = "ventana propia" if usar_propio else "período global del sidebar"
+    st.caption(f"Backtest del **{lab_start_eff.date()}** al **{lab_end_eff.date()}** ({_src}) · "
+               f"corte in-sample **{is_pct}%** / out-of-sample **{100-is_pct}%**. "
+               f"Para resultados robustos conviene historia larga (5A+/MÁX).")
 
     strat = st.radio("Estrategia",
                      ["Trend (SMA/LMA)", "Mean Reversion (RSI)", "Momentum",
@@ -2615,8 +2689,8 @@ with tab_lab:
     else:
         with st.spinner("Descargando precios..."):
             adj = fetch_adjclose_matrix(tuple(lab_tickers),
-                                        start_date.strftime("%Y-%m-%d"),
-                                        end_date.strftime("%Y-%m-%d"))
+                                        lab_start_eff.strftime("%Y-%m-%d"),
+                                        lab_end_eff.strftime("%Y-%m-%d"))
         if adj.empty:
             st.error("No se pudo descargar historia para estos activos / rango.")
         else:
@@ -2685,7 +2759,7 @@ with tab_lab:
             # ── TREND ───────────────────────────────────────────────────
             if strat == "Trend (SMA/LMA)":
                 with st.spinner("Optimizando in-sample y evaluando out-of-sample..."):
-                    r = _run(stg.backtest_sma_lma, port, cost=cost)
+                    r = _run(stg.backtest_sma_lma, port, cost=cost, is_frac=is_frac)
                 ma1, ma2 = r["params"]
                 k1, k2, k3 = st.columns(3)
                 k1.metric("SMA / LMA óptimos", f"{ma1} / {ma2}")
@@ -2709,7 +2783,7 @@ with tab_lab:
                 obought = cC.number_input("Sobrecompra", 55, 90, 70, key="rsi_ob")
                 with st.spinner("Backtest RSI..."):
                     r = _run(stg.backtest_rsi, port, window=int(rsi_win), oversold=int(osold),
-                             overbought=int(obought), cost=cost)
+                             overbought=int(obought), cost=cost, is_frac=is_frac)
                 k1, k2, k3 = st.columns(3)
                 k1.metric("Operaciones", r["n_trades"])
                 k2.metric("Días en mercado", f"{r['days_in']}/{r['n_total']}")
@@ -2733,7 +2807,7 @@ with tab_lab:
             elif strat == "Momentum":
                 mwin = st.slider("Ventana de momentum (días hábiles)", 21, 252, 126, key="mom_w")
                 with st.spinner("Backtest Momentum..."):
-                    r = _run(stg.backtest_momentum, port, window=int(mwin), cost=cost)
+                    r = _run(stg.backtest_momentum, port, window=int(mwin), cost=cost, is_frac=is_frac)
                 k1, k2 = st.columns(2)
                 k1.metric("Cambios de señal", r["n_trades"])
                 k2.metric("CAGR", f"{r['perf'].iloc[0]['CAGR %']:+.2f}%")
@@ -2758,7 +2832,7 @@ with tab_lab:
                                           key="reb_freq")
                 freq = {"Mensual (ME)": "ME", "Trimestral (QE)": "QE", "Anual (YE)": "YE"}[freq_label]
                 with st.spinner("Simulando rebalanceo..."):
-                    r = _run(stg.backtest_rebalanceo, adj, wts, freq=freq, cost=cost)
+                    r = _run(stg.backtest_rebalanceo, adj, wts, freq=freq, cost=cost, is_frac=is_frac)
                 k1, k2 = st.columns(2)
                 k1.metric("Rebalanceos ejecutados", r["n_rebal"])
                 k2.metric("Costos acumulados", f"{r['cost_acum'] / r['capital'] * 100:.3f}%")
@@ -2809,8 +2883,8 @@ with tab_lab:
                     if st.session_state.get("_ml_go"):
                         with st.spinner(f"Entrenando {model_choice} en walk-forward…"):
                             r = _run(run_ml_backtest, tuple(lab_tickers),
-                                     start_date.strftime("%Y-%m-%d"),
-                                     end_date.strftime("%Y-%m-%d"),
+                                     lab_start_eff.strftime("%Y-%m-%d"),
+                                     lab_end_eff.strftime("%Y-%m-%d"),
                                      model_choice, int(wf_win), cost)
                         if r is None:
                             st.error("No hay datos suficientes.")
@@ -2869,8 +2943,8 @@ with tab_lab:
                             with st.spinner(f"Entrenando {w_model} por activo en walk-forward… "
                                             "(puede tardar 1-3 min; quedará cacheado)"):
                                 r = _run(run_ml_weights_backtest, tuple(lab_tickers),
-                                         start_date.strftime("%Y-%m-%d"),
-                                         end_date.strftime("%Y-%m-%d"),
+                                         lab_start_eff.strftime("%Y-%m-%d"),
+                                         lab_end_eff.strftime("%Y-%m-%d"),
                                          w_model, int(wf_win), cost, float(umbral),
                                          float(max_peso))
                             if r is None:
