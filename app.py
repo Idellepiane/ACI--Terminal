@@ -257,9 +257,62 @@ BLOOMBERG_CSS = """
 st.markdown(BLOOMBERG_CSS, unsafe_allow_html=True)
 st.markdown(gb.GLOBAL_CSS, unsafe_allow_html=True)
 
+# ── Fix de tamaño de gráficos en tabs ─────────────────────────────────────────
+# Plotly + st.tabs: un chart que se dibuja con su tab OCULTO queda en ~700px y no
+# se re-mide al mostrarlo (cambiar de tab no dispara 'resize'). Un 'resize' a secas
+# no sirve: dispara Plotly.Plots.resize, que ajusta el chart al alto del contenedor
+# (que no tiene alto fijo) y lo COLAPSA a altura 0 → chart invisible.
+# Solución: al cambiar de tab (y al redimensionar la ventana de verdad), recorrer
+# todos los charts visibles y hacer Plotly.relayout con ancho del contenedor y
+# alto = el que ya tiene la figura (lo refleja la altura del wrapper .stPlotlyChart).
+_RESIZE_HOOK = """
+<script>
+(function(){
+  var p = window.parent;
+  if (p.__aciResizeHook) return;
+  p.__aciResizeHook = true;
+  var relayoutAll = function(){
+    try {
+      var P = p.Plotly; if (!P) return;
+      var plots = p.document.querySelectorAll('.js-plotly-plot');
+      for (var i = 0; i < plots.length; i++) {
+        var gd = plots[i];
+        var wrap = gd.parentElement;            // .stPlotlyChart → alto = altura de la figura
+        if (!wrap) continue;
+        var r = wrap.getBoundingClientRect();
+        var w = Math.round(r.width), h = Math.round(r.height);
+        if (w < 50 || h < 50) continue;          // tab oculto / transición → no tocar
+        var fl = gd._fullLayout || {};
+        if (Math.abs((fl.width||0) - w) < 2 && Math.abs((fl.height||0) - h) < 2) continue;
+        P.relayout(gd, {width: w, height: h});
+      }
+    } catch(e){}
+  };
+  // Cambio de tab/sub-tab: reflowea los gráficos recién mostrados a varios tiempos
+  // porque el panel tarda en pasar de oculto (ancho 0) a visible.
+  p.document.addEventListener('click', function(e){
+    if (e.target && e.target.closest && e.target.closest('[data-baseweb="tab"]')) {
+      [60, 250, 500, 900, 1400].forEach(function(ms){ setTimeout(relayoutAll, ms); });
+    }
+  }, true);
+  // Redimensionado real de la ventana (debounce).
+  var t = null;
+  p.addEventListener('resize', function(){ clearTimeout(t); t = setTimeout(relayoutAll, 150); });
+  // Disparos iniciales tras el primer render.
+  setTimeout(relayoutAll, 300); setTimeout(relayoutAll, 900); setTimeout(relayoutAll, 1800);
+})();
+</script>
+"""
+components.html(_RESIZE_HOOK, height=0)
+
 
 # Tema Plotly Bloomberg
 PLOTLY_LAYOUT = dict(
+    # NO usar autosize=True: con responsive:True + el hook de resize, autosize
+    # ajusta TAMBIÉN la altura al contenedor (que no tiene altura fija) y la
+    # colapsa a 0 → el chart queda invisible. El ancho ya lo resuelve
+    # responsive:True (Plotly llena el contenedor cuando width no está fijado);
+    # la altura la fija cada chart con height=... explícito.
     template="plotly_dark",
     paper_bgcolor="#000000",
     plot_bgcolor="#000000",
@@ -279,7 +332,11 @@ PLOTLY_LAYOUT = dict(
         showspikes=True, spikecolor="#d97a00", spikethickness=1,
         spikedash="dot", spikemode="across", spikesnap="cursor",
     ),
-    legend=dict(bgcolor="rgba(0,0,0,0.6)", bordercolor="#d97a00", borderwidth=1, font=dict(size=10)),
+    # Leyenda horizontal ARRIBA-IZQUIERDA: no se superpone con el modebar (que vive
+    # arriba a la derecha) ni tapa los datos recientes (que suelen estar a la derecha).
+    legend=dict(bgcolor="rgba(0,0,0,0.6)", bordercolor="#d97a00", borderwidth=1,
+                font=dict(size=10), orientation="h", yanchor="bottom", y=1.0,
+                xanchor="left", x=0),
     margin=dict(l=40, r=20, t=20, b=25),
     # ── Navegación suave Bloomberg/TradingView ─────────────────────────────
     dragmode="pan",               # arrastrar = pan (no zoom-box)
@@ -293,6 +350,7 @@ PLOTLY_LAYOUT = dict(
 
 # Config interactivo de Plotly: scrollZoom + barra de herramientas limpia
 PLOTLY_CONFIG = {
+    "responsive": True,                    # CLAVE: el chart se re-mide al ancho del contenedor
     "displaylogo": False,
     "displayModeBar": True,
     "scrollZoom": True,                    # rueda del mouse = zoom suave
@@ -1335,7 +1393,7 @@ with tab_global:
                     "CURVA TREASURIES US</div></div>", unsafe_allow_html=True)
         fig_curve = gb.curve_fig(qmap, PLOTLY_LAYOUT)
         if fig_curve is not None:
-            st.plotly_chart(fig_curve, use_container_width=True, config=PLOTLY_CONFIG)
+            st.plotly_chart(fig_curve, width="stretch", config=PLOTLY_CONFIG)
         else:
             st.caption("Curva de tasas: esperando datos de Yahoo…")
     with c_vol:
@@ -1368,7 +1426,7 @@ with tab_global:
         c_l.markdown(l_html, unsafe_allow_html=True)
         fig_map = gb.treemap_fig(q_now, "JetBrains Mono, Menlo, monospace")
         if fig_map is not None:
-            st.plotly_chart(fig_map, use_container_width=True, config=PLOTLY_CONFIG)
+            st.plotly_chart(fig_map, width="stretch", config=PLOTLY_CONFIG)
         st.caption(f"GLOBAL BOARD · {len(q_now)}/{n_total} instrumentos · "
                    f"fuentes: Yahoo (índices/commodities/acciones) · er-api (FX) · Binance (crypto) · "
                    f"price stream {GB_POLL_SEC}s · sparklines = último mes")
@@ -1430,7 +1488,7 @@ with tab_market:
             **PLOTLY_LAYOUT,
             height=480,
         )
-        st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+        st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG)
 
     st.markdown("---")
     st.markdown("##### DAILY HEATMAP  ·  LAST SESSION %CHG")
@@ -1444,16 +1502,17 @@ with tab_market:
                 text=[f"{v:+.2f}%" for v in hm["Cambio %"]], textposition="outside",
             ))
             fig_hm.update_layout(**PLOTLY_LAYOUT, height=430, yaxis_title="%CHG", showlegend=False)
-            st.plotly_chart(fig_hm, use_container_width=True, config=PLOTLY_CONFIG)
+            st.plotly_chart(fig_hm, width="stretch", config=PLOTLY_CONFIG)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # TAB · ANÁLISIS TÉCNICO
 # ──────────────────────────────────────────────────────────────────────────────
 with tab_tech:
-    # Controles arriba (columna angosta); el gráfico va a ancho COMPLETO debajo.
-    col_a = st.columns([1, 2])[0]
-    with col_a:
+    # Fila de controles: indicador a la izquierda, parámetros en columnas a la
+    # derecha (sin vacío negro). El gráfico va a ancho COMPLETO debajo.
+    ctl_ind, ctl_par = st.columns([1, 3])
+    with ctl_ind:
         st.markdown("##### INDICATOR")
         indicator_name = st.selectbox(
             "Indicator",
@@ -1464,17 +1523,24 @@ with tab_tech:
         cfg = ind.INDICATORS[indicator_name]
         st.caption(f"Type: {cfg['kind'].upper()}")
 
+    params = {}
+    with ctl_par:
         st.markdown("**PARAMETERS**")
-        params = {}
-        for k, default in cfg["params"].items():
-            if isinstance(default, bool):
-                params[k] = st.checkbox(k, value=default)
-            elif isinstance(default, int):
-                params[k] = st.number_input(k, value=default, step=1)
-            elif isinstance(default, float):
-                params[k] = st.number_input(k, value=float(default), step=0.5, format="%.2f")
-            else:
-                params[k] = st.text_input(k, value=str(default))
+        _pkeys = list(cfg["params"].items())
+        if _pkeys:
+            _pcols = st.columns(len(_pkeys))
+            for (k, default), _pc in zip(_pkeys, _pcols):
+                with _pc:
+                    if isinstance(default, bool):
+                        params[k] = st.checkbox(k, value=default)
+                    elif isinstance(default, int):
+                        params[k] = st.number_input(k, value=default, step=1)
+                    elif isinstance(default, float):
+                        params[k] = st.number_input(k, value=float(default), step=0.5, format="%.2f")
+                    else:
+                        params[k] = st.text_input(k, value=str(default))
+        else:
+            st.caption("Sin parámetros configurables.")
 
     with st.container():
         st.markdown(f"##### {primary}  ·  {indicator_name.upper()}")
@@ -1509,7 +1575,7 @@ with tab_tech:
                     fig.add_trace(go.Scatter(x=d.index, y=d["LR_Lower"], name=f"-{params.get('k', 2)}σ", line=dict(color=RED, dash="dash"),
                                               fill="tonexty", fillcolor="rgba(255,255,255,0.03)"))
                 fig.update_layout(**PLOTLY_LAYOUT, height=700, xaxis_rangeslider_visible=False)
-                st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+                st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG)
 
             elif kind == "oscillator":
                 # Panel doble: precio arriba, oscilador abajo
@@ -1585,7 +1651,7 @@ with tab_tech:
                 fig.update_layout(
                     **PLOTLY_LAYOUT, height=700, xaxis_rangeslider_visible=False,
                 )
-                st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+                st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG)
 
             elif kind == "elliott":
                 d, picos, valles = ind.elliott(df, **params)
@@ -1653,7 +1719,7 @@ with tab_tech:
                     **PLOTLY_LAYOUT, height=700,
                     xaxis_rangeslider_visible=False,
                 )
-                st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+                st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG)
 
                 # ── Resumen de etiquetado y validaciones
                 if waves:
@@ -1701,7 +1767,8 @@ with tab_fund:
             st.dataframe(df_ratios.round(2), use_container_width=True)
 
             ratios_list = list(df_ratios.index)
-            fig = make_subplots(rows=2, cols=2, subplot_titles=ratios_list)
+            fig = make_subplots(rows=2, cols=2, subplot_titles=ratios_list,
+                                vertical_spacing=0.16, horizontal_spacing=0.10)
             colors_cycle = [ACCENT, CYAN, GREEN, RED, PURPLE, "#ffa600", "#00ffaa"]
             for i, ratio_name in enumerate(ratios_list):
                 r, c = i // 2 + 1, i % 2 + 1
@@ -1715,8 +1782,8 @@ with tab_fund:
                     ),
                     row=r, col=c,
                 )
-            fig.update_layout(**PLOTLY_LAYOUT, height=600)
-            st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+            fig.update_layout(**PLOTLY_LAYOUT, height=680)
+            st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG)
 
     with sub2:
         st.markdown("##### FINANCIAL STATEMENTS")
@@ -1819,7 +1886,7 @@ with tab_theory:
                     colorbar=dict(title="Cov<br>(daily)"),
                 ))
                 fig_cd.update_layout(**PLOTLY_LAYOUT, height=420)
-                st.plotly_chart(fig_cd, use_container_width=True, config=PLOTLY_CONFIG)
+                st.plotly_chart(fig_cd, width="stretch", config=PLOTLY_CONFIG)
             with cc2:
                 st.markdown("**Σ ANNUALIZED (×252)**")
                 fig_ca = go.Figure(go.Heatmap(
@@ -1829,7 +1896,7 @@ with tab_theory:
                     colorbar=dict(title="Cov<br>(annual)"),
                 ))
                 fig_ca.update_layout(**PLOTLY_LAYOUT, height=420)
-                st.plotly_chart(fig_ca, use_container_width=True, config=PLOTLY_CONFIG)
+                st.plotly_chart(fig_ca, width="stretch", config=PLOTLY_CONFIG)
 
             # Diagonal: σ² y σ
             st.markdown("**ANNUALIZED VOLATILITY (diagonal of Σ)**")
@@ -1868,7 +1935,7 @@ with tab_theory:
                 colorbar=dict(title="ρ"),
             ))
             fig_corr.update_layout(**PLOTLY_LAYOUT, height=500)
-            st.plotly_chart(fig_corr, use_container_width=True, config=PLOTLY_CONFIG)
+            st.plotly_chart(fig_corr, width="stretch", config=PLOTLY_CONFIG)
 
             # Pares máximos/mínimos
             mask = np.triu(np.ones_like(corr, dtype=bool), k=1)
@@ -1934,7 +2001,7 @@ with tab_theory:
             # Estilo de los títulos (color ámbar, monoespacio)
             fig_nl.update_annotations(font=dict(family="JetBrains Mono", size=11,
                                                   color="#d97a00"))
-            st.plotly_chart(fig_nl, use_container_width=True, config=PLOTLY_CONFIG)
+            st.plotly_chart(fig_nl, width="stretch", config=PLOTLY_CONFIG)
             st.caption(
                 "r ≈ 0 does NOT imply independence — only absence of LINEAR relationship. "
                 "Spearman / Kendall catch some non-linear cases but the circle defeats them all."
@@ -1959,7 +2026,7 @@ with tab_theory:
                     ))
                     fig.update_layout(**PLOTLY_LAYOUT, height=320,
                                        title=dict(text=f"Period {i+1}", font=dict(color=ACCENT, size=12)))
-                    st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+                    st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG)
 
             # Distancias entre períodos consecutivos
             st.markdown("**FROBENIUS DISTANCES**")
@@ -2084,7 +2151,7 @@ with tab_theory:
                         xaxis_title="Beta (β)", yaxis_title="Annual return",
                     )
                     fig_sml.update_yaxes(tickformat=".0%")
-                    st.plotly_chart(fig_sml, use_container_width=True, config=PLOTLY_CONFIG)
+                    st.plotly_chart(fig_sml, width="stretch", config=PLOTLY_CONFIG)
                     st.caption(
                         "Green = positive α (above the SML, outperformed CAPM) · "
                         "Red = negative α · Vertical dotted move = α magnitude."
@@ -2208,7 +2275,7 @@ with tab_theory:
                 )
                 fig_fr.update_xaxes(tickformat=".0%")
                 fig_fr.update_yaxes(tickformat=".0%")
-                st.plotly_chart(fig_fr, use_container_width=True, config=PLOTLY_CONFIG)
+                st.plotly_chart(fig_fr, width="stretch", config=PLOTLY_CONFIG)
 
                 # Composición y contribución al riesgo del tangente
                 cw1, cw2 = st.columns(2)
@@ -2226,7 +2293,7 @@ with tab_theory:
                     ))
                     fig_w.update_layout(**PLOTLY_LAYOUT, height=350,
                                          yaxis_title="Weight %", showlegend=False)
-                    st.plotly_chart(fig_w, use_container_width=True, config=PLOTLY_CONFIG)
+                    st.plotly_chart(fig_w, width="stretch", config=PLOTLY_CONFIG)
                 with cw2:
                     st.markdown("**RISK CONTRIBUTION**")
                     rc = pt.risk_contribution(tan["weights"], ann_cov)
@@ -2238,7 +2305,7 @@ with tab_theory:
                     ))
                     fig_rc.update_layout(**PLOTLY_LAYOUT, height=350,
                                           yaxis_title="Risk contribution %", showlegend=False)
-                    st.plotly_chart(fig_rc, use_container_width=True, config=PLOTLY_CONFIG)
+                    st.plotly_chart(fig_rc, width="stretch", config=PLOTLY_CONFIG)
 
                 st.caption(
                     "Monte Carlo cloud approximates the feasible set. SLSQP gives the TRUE "
@@ -2362,7 +2429,7 @@ with tab_theory:
                 )
                 fig_up.update_xaxes(tickformat=".0%")
                 fig_up.update_yaxes(tickformat=".0%")
-                st.plotly_chart(fig_up, use_container_width=True, config=PLOTLY_CONFIG)
+                st.plotly_chart(fig_up, width="stretch", config=PLOTLY_CONFIG)
 
                 # Composición + contrib al riesgo
                 cu_w1, cu_w2 = st.columns(2)
@@ -2376,7 +2443,7 @@ with tab_theory:
                     ))
                     fig_wu.update_layout(**PLOTLY_LAYOUT, height=350,
                                           yaxis_title="Weight %", showlegend=False)
-                    st.plotly_chart(fig_wu, use_container_width=True, config=PLOTLY_CONFIG)
+                    st.plotly_chart(fig_wu, width="stretch", config=PLOTLY_CONFIG)
                 with cu_w2:
                     st.markdown("**RISK CONTRIBUTION**")
                     rc_u = pt.risk_contribution(tan_up["weights"], ann_cov_v)
@@ -2388,7 +2455,7 @@ with tab_theory:
                     ))
                     fig_rcu.update_layout(**PLOTLY_LAYOUT, height=350,
                                            yaxis_title="Risk contribution %", showlegend=False)
-                    st.plotly_chart(fig_rcu, use_container_width=True, config=PLOTLY_CONFIG)
+                    st.plotly_chart(fig_rcu, width="stretch", config=PLOTLY_CONFIG)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -2439,7 +2506,7 @@ with tab_port:
                                   line=dict(color=CYAN, width=1.5, dash="dash")))
         fig.update_layout(**PLOTLY_LAYOUT, height=460,
                           yaxis_title="Value (base 1.0)")
-        st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+        st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG)
 
         # Allocation pie + correlation heatmap
         cc1, cc2 = st.columns(2)
@@ -2450,7 +2517,7 @@ with tab_port:
             ))
             fig_pie.update_layout(**PLOTLY_LAYOUT, height=380)
             st.markdown("**ALLOCATION**")
-            st.plotly_chart(fig_pie, use_container_width=True, config=PLOTLY_CONFIG)
+            st.plotly_chart(fig_pie, width="stretch", config=PLOTLY_CONFIG)
         with cc2:
             corr = rets.corr()
             fig_corr = go.Figure(go.Heatmap(
@@ -2460,7 +2527,7 @@ with tab_port:
             ))
             fig_corr.update_layout(**PLOTLY_LAYOUT, height=380)
             st.markdown("**CORRELATION**")
-            st.plotly_chart(fig_corr, use_container_width=True, config=PLOTLY_CONFIG)
+            st.plotly_chart(fig_corr, width="stretch", config=PLOTLY_CONFIG)
 
         st.markdown("**DRAWDOWN (%)**")
         dd_series = port_cum / port_cum.cummax() - 1
@@ -2468,7 +2535,7 @@ with tab_port:
         fig_dd.add_trace(go.Scatter(x=dd_series.index, y=dd_series.values * 100,
                                      fill="tozeroy", line=dict(color=RED), name="Drawdown"))
         fig_dd.update_layout(**PLOTLY_LAYOUT, height=380, yaxis_title="DD %")
-        st.plotly_chart(fig_dd, use_container_width=True, config=PLOTLY_CONFIG)
+        st.plotly_chart(fig_dd, width="stretch", config=PLOTLY_CONFIG)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -2541,7 +2608,7 @@ with tab_risk:
                                            textposition="outside"))
                     fig_c.update_layout(**PLOTLY_LAYOUT, height=380, barmode="group",
                                         yaxis_title="Pérdida (USD)")
-                    st.plotly_chart(fig_c, use_container_width=True, config=PLOTLY_CONFIG)
+                    st.plotly_chart(fig_c, width="stretch", config=PLOTLY_CONFIG)
                 with cc2:
                     st.markdown("**DISTRIBUCIÓN DE RETORNOS Y COLA DE RIESGO**")
                     ret_hist = h["ret_cartera"]
@@ -2559,7 +2626,7 @@ with tab_risk:
                         fig_d.add_vline(x=r["ret_var"], line=dict(color=color, width=1.6, dash=dash))
                     fig_d.update_layout(**PLOTLY_LAYOUT, height=380, yaxis_title="Densidad",
                                         xaxis_title="Retorno")
-                    st.plotly_chart(fig_d, use_container_width=True, config=PLOTLY_CONFIG)
+                    st.plotly_chart(fig_d, width="stretch", config=PLOTLY_CONFIG)
 
                 disc = comp["VaR (USD)"].max() - comp["VaR (USD)"].min()
                 mas = comp.loc[comp["VaR (USD)"].idxmax(), "Método"]
@@ -2616,7 +2683,7 @@ with tab_risk:
                                        name="Interacción", marker_color="#8B6F47"))
                 fig_b.update_layout(**PLOTLY_LAYOUT, height=380, barmode="relative",
                                     yaxis_title="Contribución (%)")
-                st.plotly_chart(fig_b, use_container_width=True, config=PLOTLY_CONFIG)
+                st.plotly_chart(fig_b, width="stretch", config=PLOTLY_CONFIG)
             with cc2:
                 st.markdown("**BHB vs BF — TOTALES AGREGADOS**")
                 fig_t = go.Figure()
@@ -2629,7 +2696,7 @@ with tab_risk:
                                           0, tf["exceso"] * 100]))
                 fig_t.update_layout(**PLOTLY_LAYOUT, height=380, barmode="group",
                                     yaxis_title="Contribución (%)")
-                st.plotly_chart(fig_t, use_container_width=True, config=PLOTLY_CONFIG)
+                st.plotly_chart(fig_t, width="stretch", config=PLOTLY_CONFIG)
 
             show = df_bhb[["Sector", "Asignacion", "Seleccion", "Interaccion", "Total"]].copy()
             show = show.merge(df_bf[["Sector", "Allocation", "Selection"]], on="Sector")
@@ -2779,10 +2846,10 @@ with tab_lab:
                 st.plotly_chart(_equity_dd(r["df"], r["dd"], "CUM_STRATEGY", "CUM_BH",
                                            r["label"], r["buys"], r["sells"],
                                            "Golden cross", "Death cross"),
-                                use_container_width=True, config=PLOTLY_CONFIG)
+                                width="stretch", config=PLOTLY_CONFIG)
                 st.markdown("**RIESGO SIMULADO — MONTE CARLO (1000 trayectorias)**")
                 st.plotly_chart(_mc_hist(r["mc"], r["label"]),
-                                use_container_width=True, config=PLOTLY_CONFIG)
+                                width="stretch", config=PLOTLY_CONFIG)
 
             # ── RSI ─────────────────────────────────────────────────────
             elif strat == "Mean Reversion (RSI)":
@@ -2800,7 +2867,7 @@ with tab_lab:
                 _show_perf(r["perf"])
                 fig = _equity_dd(r["df"], r["dd"], "CUM_STRATEGY", "CUM_BH", r["label"],
                                  r["buys"], r["sells"], "Compra RSI<os", "Venta RSI>ob")
-                st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+                st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG)
                 st.markdown("**RSI**")
                 fig_rsi = go.Figure()
                 fig_rsi.add_trace(go.Scatter(x=r["df"].index, y=r["df"]["RSI"],
@@ -2808,9 +2875,9 @@ with tab_lab:
                 fig_rsi.add_hline(y=obought, line=dict(color=RED, dash="dash"))
                 fig_rsi.add_hline(y=osold, line=dict(color=GREEN, dash="dash"))
                 fig_rsi.update_layout(**PLOTLY_LAYOUT, height=260, yaxis_range=[0, 100])
-                st.plotly_chart(fig_rsi, use_container_width=True, config=PLOTLY_CONFIG)
+                st.plotly_chart(fig_rsi, width="stretch", config=PLOTLY_CONFIG)
                 st.plotly_chart(_mc_hist(r["mc"], r["label"]),
-                                use_container_width=True, config=PLOTLY_CONFIG)
+                                width="stretch", config=PLOTLY_CONFIG)
 
             # ── MOMENTUM ────────────────────────────────────────────────
             elif strat == "Momentum":
@@ -2823,16 +2890,16 @@ with tab_lab:
                 _show_perf(r["perf"])
                 st.plotly_chart(_equity_dd(r["df"], r["dd"], "CUM_STRATEGY", "CUM_BH",
                                            r["label"], r["buys"], r["sells"], "Long", "Short"),
-                                use_container_width=True, config=PLOTLY_CONFIG)
+                                width="stretch", config=PLOTLY_CONFIG)
                 st.markdown("**MOMENTUM CRUDO**")
                 fig_m = go.Figure()
                 fig_m.add_trace(go.Scatter(x=r["df"].index, y=r["df"]["MOMENTUM"] * 100,
                                            line=dict(color=ACCENT, width=1.2), name="Momentum"))
                 fig_m.add_hline(y=0, line=dict(color="#888", dash="dash"))
                 fig_m.update_layout(**PLOTLY_LAYOUT, height=260, yaxis_title="Momentum (%)")
-                st.plotly_chart(fig_m, use_container_width=True, config=PLOTLY_CONFIG)
+                st.plotly_chart(fig_m, width="stretch", config=PLOTLY_CONFIG)
                 st.plotly_chart(_mc_hist(r["mc"], r["label"]),
-                                use_container_width=True, config=PLOTLY_CONFIG)
+                                width="stretch", config=PLOTLY_CONFIG)
 
             # ── REBALANCEO ──────────────────────────────────────────────
             elif strat == "Rebalanceo":
@@ -2859,7 +2926,7 @@ with tab_lab:
                 fig.update_layout(**PLOTLY_LAYOUT, height=520)
                 fig.update_yaxes(title_text="Retorno acum. (%)", row=1, col=1)
                 fig.update_yaxes(title_text="DD %", row=2, col=1)
-                st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+                st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG)
                 st.markdown("**PORTFOLIO DRIFT — pesos sin rebalancear (Buy & Hold)**")
                 fig_dr = go.Figure()
                 for col in r["bh_pesos"].columns:
@@ -2867,7 +2934,7 @@ with tab_lab:
                                                 mode="lines", stackgroup="one", name=col))
                 fig_dr.update_layout(**PLOTLY_LAYOUT, height=320, yaxis_title="Peso",
                                      yaxis_range=[0, 1])
-                st.plotly_chart(fig_dr, use_container_width=True, config=PLOTLY_CONFIG)
+                st.plotly_chart(fig_dr, width="stretch", config=PLOTLY_CONFIG)
 
             # ── MACHINE LEARNING ────────────────────────────────────────
             elif strat == "Machine Learning":
@@ -2905,7 +2972,7 @@ with tab_lab:
                             k4.metric("Días invertido", f"{r['days_in']}/{r['n_total']}")
                             _show_perf(r["perf"])
                             st.plotly_chart(_equity_dd(r["df"], r["dd"], "CUM_ML", "CUM_BH", r["label"]),
-                                            use_container_width=True, config=PLOTLY_CONFIG)
+                                            width="stretch", config=PLOTLY_CONFIG)
                             cc1, cc2 = st.columns(2)
                             with cc1:
                                 st.markdown("**MATRIZ DE CONFUSIÓN**")
@@ -2915,7 +2982,7 @@ with tab_lab:
                                     y=["Real Bajada", "Real Subida"], colorscale="Blues",
                                     text=cm, texttemplate="%{text}", showscale=False))
                                 fig_cm.update_layout(**PLOTLY_LAYOUT, height=340)
-                                st.plotly_chart(fig_cm, use_container_width=True, config=PLOTLY_CONFIG)
+                                st.plotly_chart(fig_cm, width="stretch", config=PLOTLY_CONFIG)
                             with cc2:
                                 if r["importances"] is not None:
                                     st.markdown("**IMPORTANCIA DE FEATURES**")
@@ -2923,12 +2990,12 @@ with tab_lab:
                                     fig_i = go.Figure(go.Bar(x=imp.values, y=list(imp.index),
                                                              orientation="h", marker_color=GREEN))
                                     fig_i.update_layout(**PLOTLY_LAYOUT, height=340, xaxis_title="Importancia")
-                                    st.plotly_chart(fig_i, use_container_width=True, config=PLOTLY_CONFIG)
+                                    st.plotly_chart(fig_i, width="stretch", config=PLOTLY_CONFIG)
                                 else:
                                     st.info("SVM no expone feature_importances_.")
                             st.markdown("**RIESGO SIMULADO — MONTE CARLO**")
                             st.plotly_chart(_mc_hist(r["mc"], r["label"]),
-                                            use_container_width=True, config=PLOTLY_CONFIG)
+                                            width="stretch", config=PLOTLY_CONFIG)
                     else:
                         st.info("Configurá el modelo y la ventana, y tocá **CORRER WALK-FORWARD**.")
 
@@ -2966,7 +3033,7 @@ with tab_lab:
                                 k4.metric("% invertido medio", f"{r['invertido_medio']*100:.0f}%")
                                 _show_perf(r["perf"])
                                 st.plotly_chart(_equity_dd(r["df"], r["dd"], "CUM_ML", "CUM_BH", r["label"]),
-                                                use_container_width=True, config=PLOTLY_CONFIG)
+                                                width="stretch", config=PLOTLY_CONFIG)
                                 st.markdown("**COMPOSICIÓN DE LA CARTERA EN EL TIEMPO · rotación guiada por ML**")
                                 pf = r["pesos_df"]
                                 fig_w = go.Figure()
@@ -2979,7 +3046,7 @@ with tab_lab:
                                     name="% invertido", line=dict(color="#fff", width=1, dash="dot")))
                                 fig_w.update_layout(**PLOTLY_LAYOUT, height=420,
                                                     yaxis_title="Peso (%)", yaxis_range=[0, 100])
-                                st.plotly_chart(fig_w, use_container_width=True, config=PLOTLY_CONFIG)
+                                st.plotly_chart(fig_w, width="stretch", config=PLOTLY_CONFIG)
                                 cc1, cc2 = st.columns([1, 1.4])
                                 with cc1:
                                     st.markdown("**PESO MEDIO POR ACTIVO (en cartera)**")
@@ -2990,7 +3057,7 @@ with tab_lab:
                                 with cc2:
                                     st.markdown("**RIESGO SIMULADO — MONTE CARLO**")
                                     st.plotly_chart(_mc_hist(r["mc"], r["label"]),
-                                                    use_container_width=True, config=PLOTLY_CONFIG)
+                                                    width="stretch", config=PLOTLY_CONFIG)
                         else:
                             st.info("Configurá los parámetros y tocá **CORRER ROTACIÓN ML**.")
 

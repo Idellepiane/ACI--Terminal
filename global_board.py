@@ -290,8 +290,32 @@ GLOBAL_CSS = """
     /* --- Densidad: menos aire entre bloques (tablero aglomerado) --- */
     div[data-testid="stVerticalBlock"] { gap: 0.45rem !important; }
     div[data-testid="stElementContainer"] { margin-bottom: 0 !important; }
-    .bbg-panel { margin-bottom: 4px; }
     .main .block-container { padding-top: 0.4rem; }
+
+    /* --- Paneles como TARJETAS de igual altura por fila ---
+       Sin esto, la columna más corta (p.ej. AMÉRICAS con menos índices que
+       ASIA) dejaba ver el negro de la página como un "hueco" hasta que
+       arrancaba la fila siguiente. Con tarjeta + estiramiento a igual altura,
+       ese espacio queda DENTRO de la tarjeta y se lee como panel con aire. */
+    .bbg-panel {
+        background: #070707;
+        border: 1px solid #1b1b1b;
+        border-radius: 3px;
+        overflow: hidden;
+        padding: 0 0 4px 0;
+        margin-bottom: 4px;
+        height: 100%;
+        box-sizing: border-box;
+    }
+    /* Las columnas de una misma fila estiran a la altura de la más alta, y el
+       panel llena su columna. */
+    div[data-testid="stHorizontalBlock"] { align-items: stretch; }
+    div[data-testid="column"] > div[data-testid="stVerticalBlock"] { height: 100%; }
+    div[data-testid="column"] div[data-testid="stElementContainer"]:has(.bbg-panel),
+    div[data-testid="column"] div[data-testid="stMarkdown"]:has(.bbg-panel),
+    div[data-testid="column"] div[data-testid="stMarkdownContainer"]:has(.bbg-panel) {
+        height: 100%;
+    }
 </style>
 """
 
