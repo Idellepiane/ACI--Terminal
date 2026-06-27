@@ -531,10 +531,12 @@ def movers_html(qmap: dict[str, dict], top_n: int = 10) -> tuple[str, str]:
 # PRICE STREAM  ·  actualización in-place del DOM (sin rerun de la página)
 # ════════════════════════════════════════════════════════════════════════════════
 # Se inyecta vía st.components.v1.html (iframe same-origin) desde un fragment
-# minúsculo que corre cada ~2s. El script pisa los <span data-sym> del documento
-# padre con los precios nuevos y hace flash verde/rojo en cada tick, estilo
-# Bloomberg. Nada del resto de la página se re-renderiza: charts, scroll y
-# dropdowns quedan intactos.
+# minúsculo que corre cada ~5s. Va por iframe (y NO por st.html) a propósito:
+# st.html no re-ejecuta el script en los reruns de un fragment run_every, así que
+# el stream se congelaría. El iframe se recrea en cada tick (forzado por el salt)
+# y re-ejecuta. El script pisa los <span data-sym> del documento PADRE con los
+# precios nuevos y hace flash verde/rojo en cada tick, estilo Bloomberg. Nada del
+# resto de la página se re-renderiza: charts, scroll y dropdowns quedan intactos.
 _STREAM_TEMPLATE = """
 <script>
 (function () {

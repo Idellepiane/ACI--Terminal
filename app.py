@@ -268,7 +268,10 @@ st.markdown(gb.GLOBAL_CSS, unsafe_allow_html=True)
 _RESIZE_HOOK = """
 <script>
 (function(){
-  var p = window.parent;
+  // st.html ejecuta el script INLINE en el documento de la app (no en iframe),
+  // así que el objetivo es `window` directamente (antes era window.parent porque
+  // components.html lo metía en un iframe hijo).
+  var p = window;
   if (p.__aciResizeHook) return;
   p.__aciResizeHook = true;
   var relayoutAll = function(){
@@ -282,8 +285,9 @@ _RESIZE_HOOK = """
         var r = wrap.getBoundingClientRect();
         var w = Math.round(r.width), h = Math.round(r.height);
         if (w < 50 || h < 50) continue;          // tab oculto / transición → no tocar
-        var fl = gd._fullLayout || {};
-        if (Math.abs((fl.width||0) - w) < 2 && Math.abs((fl.height||0) - h) < 2) continue;
+        // Sin guard por fl.width: Plotly puede tener fl.width = ancho del
+        // contenedor pero el área dibujada quedó STALE (p.ej. tras un resize
+        // narrow→wide). Relayout es barato e idempotente → siempre lo aplicamos.
         P.relayout(gd, {width: w, height: h});
       }
     } catch(e){}
@@ -303,7 +307,7 @@ _RESIZE_HOOK = """
 })();
 </script>
 """
-components.html(_RESIZE_HOOK, height=0)
+st.html(_RESIZE_HOOK, unsafe_allow_javascript=True)
 
 
 # Tema Plotly Bloomberg
@@ -366,6 +370,67 @@ PLOTLY_CONFIG = {
 }
 
 ACCENT = "#d97a00"     # Burnt amber — alto contraste con blanco sobre fondo negro
+
+# ── Glosario de ayuda (tooltips ⓘ en las métricas) ────────────────────────────
+# Explicaciones cortas y en criollo para que cada número se entienda sin salir de
+# la app. Se pasan a st.metric(..., help=HELP["clave"]) → aparecen al pasar el
+# mouse por el ícono ⓘ. Centralizado para no repetir (ej. Sharpe sale en 4 tabs).
+HELP = {
+    # — Riesgo / retorno —
+    "sharpe": "Sharpe = (retorno − tasa libre de riesgo) / volatilidad. "
+              "Cuánto retorno extra te pagan por cada unidad de riesgo total. "
+              "Más alto = mejor. >1 es bueno, >2 muy bueno.",
+    "sortino": "Como el Sharpe pero divide solo por la volatilidad de las CAÍDAS "
+               "(downside), no por toda la volatilidad. Premia que la cartera no "
+               "tenga sustos hacia abajo. Más alto = mejor.",
+    "calmar": "Calmar = retorno anualizado / máxima caída (Max DD). Mide retorno "
+              "por unidad de 'peor golpe' sufrido. Más alto = mejor.",
+    "max_dd": "Máximo Drawdown: la peor caída pico-a-valle del período (cuánto "
+              "perdías si comprabas en el peor máximo y vendías en el peor mínimo). "
+              "Más cerca de 0 = menos doloroso.",
+    "vol": "Volatilidad anualizada: desvío estándar de los retornos. Mide cuánto "
+           "oscila la cartera. Más alta = más riesgo/incertidumbre.",
+    "ret_total": "Retorno total acumulado del período (no anualizado): cuánto "
+                 "ganó o perdió la cartera de punta a punta.",
+    "cagr": "CAGR: retorno anual compuesto equivalente. La tasa constante por año "
+            "que te lleva del valor inicial al final. Normaliza períodos largos.",
+    "hit_ratio": "% de días (o trades) con retorno positivo. Ojo: ganar seguido no "
+                 "garantiza ganar plata si las pérdidas son grandes.",
+    # — VaR / CVaR (Clase 4) —
+    "var": "VaR (Value at Risk): la pérdida que NO se supera con cierta confianza "
+           "(ej. 95%). 'En el 95% de los días no perdés más que esto'. Es un piso "
+           "típico de pérdida, no el peor caso.",
+    "cvar": "CVaR (o Expected Shortfall): el promedio de las pérdidas en el peor "
+            "5% de los casos (la cola que el VaR deja afuera). Responde '¿y cuando "
+            "se pone feo, cuánto pierdo en promedio?'. Siempre ≥ VaR.",
+    # — Markowitz / CAPM (Clase 3) —
+    "tan_return": "Retorno esperado anualizado de la cartera tangente (la de "
+                  "máximo Sharpe sobre la frontera eficiente).",
+    "tan_vol": "Volatilidad anualizada de la cartera tangente.",
+    "constraint": "Cota de peso por activo impuesta al optimizador (mínimo y "
+                  "máximo que puede asignar a cada uno).",
+    "max_conc": "Mayor peso asignado a un solo activo. Alto = cartera concentrada "
+                "(menos diversificada).",
+    # — Atribución Brinson (Clase 4) —
+    "exceso": "Exceso de retorno = cartera − benchmark. Lo que sumó (o restó) tu "
+              "gestión activa frente a seguir el índice.",
+    # — Backtesting / ML (Clase 5) —
+    "cagr_oos": "CAGR fuera de muestra (out-of-sample): el rendimiento en datos que "
+                "el modelo NO vio al optimizar. Es el que vale; el in-sample siempre "
+                "se ve lindo.",
+    "overfit_gap": "Brecha de sobreajuste = rendimiento in-sample − out-of-sample. "
+                   "Grande y positiva = la estrategia funcionaba 'mirando el "
+                   "pasado' pero no generaliza (overfitting).",
+    "accuracy": "% de aciertos del modelo al predecir si el día sube o baja. "
+                "Cerca de 50% = poco mejor que tirar una moneda.",
+    "turnover": "Turnover: cuánto rota la cartera por día (cuánto compra/vende). "
+                "Alto = más costos de transacción comiéndose el retorno.",
+    "invertido": "% del capital efectivamente invertido en promedio (el resto "
+                 "queda en cash). Bajo = la estrategia estuvo mucho tiempo afuera.",
+    "n_trades": "Cantidad de operaciones (o cambios de señal) en el período. Más "
+                "trades = más costos.",
+    "days_in": "Días con posición abierta vs. total de días del backtest.",
+}
 
 
 def _adj_price(df: pd.DataFrame) -> pd.Series:
@@ -1080,7 +1145,7 @@ with st.sidebar:
         label_visibility="collapsed",
     )
 
-    if st.button("ADD TO WATCHLIST", use_container_width=True):
+    if st.button("ADD TO WATCHLIST", width="stretch"):
         added = False
         for t in picks_group:
             if t not in st.session_state.watchlist:
@@ -1100,7 +1165,7 @@ with st.sidebar:
                     res_display["label"] = res_display["symbol"] + " — " + res_display["name"].fillna("")
                     pick = st.selectbox("Results", options=res_display["label"].tolist(), index=0)
                     chosen_symbol = pick.split(" — ")[0]
-                    if st.button(f"ADD {chosen_symbol}", use_container_width=True):
+                    if st.button(f"ADD {chosen_symbol}", width="stretch"):
                         if chosen_symbol not in st.session_state.watchlist:
                             st.session_state.watchlist.append(chosen_symbol)
                             st.rerun()
@@ -1110,7 +1175,7 @@ with st.sidebar:
     # ── 3) Ticker manual ────────────────────────────────────────────────────
     with st.expander("MANUAL ENTRY", expanded=False):
         manual = st.text_input("Symbol (e.g. GGAL.BA, BTC-USD)", value="").strip().upper()
-        if manual and st.button("ADD", use_container_width=True, key="add_manual"):
+        if manual and st.button("ADD", width="stretch", key="add_manual"):
             if manual not in st.session_state.watchlist:
                 st.session_state.watchlist.append(manual)
                 st.rerun()
@@ -1124,7 +1189,7 @@ with st.sidebar:
         default=st.session_state.watchlist,
         label_visibility="collapsed",
     )
-    if st.button("CLEAR", use_container_width=True):
+    if st.button("CLEAR", width="stretch"):
         st.session_state.watchlist = []
         _save_watchlist([])
         st.rerun()
@@ -1442,6 +1507,10 @@ with tab_global:
     def gb_price_stream():
         payload = fetch_stream_quotes(_stream_tickers)
         if payload:
+            # OJO: components.html (iframe) — NO migrar a st.html. st.html ejecuta el
+            # JS inline pero NO re-ejecuta el script en los reruns de un fragment
+            # run_every, así que el stream dejaría de latir. El iframe se recrea en
+            # cada tick (forzado por el salt) y re-ejecuta → precios vivos.
             components.html(
                 gb.stream_js(payload, salt=datetime.now().strftime("%H%M%S%f")),
                 height=0,
@@ -1465,7 +1534,7 @@ with tab_market:
         styled["Cambio %"] = styled["Cambio %"].apply(lambda v: f"{v:+.2f}%" if pd.notna(v) else "—")
         styled["Volumen"] = styled["Volumen"].apply(fnd.format_amount)
         styled["Cap Mercado"] = styled["Cap Mercado"].apply(fnd.format_amount)
-        st.dataframe(styled, use_container_width=True, hide_index=True)
+        st.dataframe(styled, width="stretch", hide_index=True)
 
     st.markdown("---")
     st.markdown("##### COMPARATIVE PERFORMANCE  ·  BASE 100")
@@ -1509,6 +1578,17 @@ with tab_market:
 # TAB · ANÁLISIS TÉCNICO
 # ──────────────────────────────────────────────────────────────────────────────
 with tab_tech:
+    with st.expander("📖 ¿Cómo leer esta pestaña?"):
+        st.markdown(
+            "**Análisis técnico (Clase 2):** estudia el PRECIO y el VOLUMEN, no el balance de "
+            "la empresa. La premisa es que el precio descuenta todo y que los patrones se repiten.\n\n"
+            "- **Medias móviles / Bollinger:** se dibujan SOBRE el precio. Cruces y toques de "
+            "bandas marcan posible cambio de tendencia o sobre-extensión.\n"
+            "- **Osciladores (RSI, MACD, estocástico):** van en un panel aparte (escala 0-100 o "
+            "centrada en 0). Sirven para detectar sobrecompra/sobreventa y divergencias con el precio.\n"
+            "- **Fibonacci / Elliott:** niveles y conteo de ondas para mapear retrocesos y impulsos.\n\n"
+            "Elegí el indicador a la izquierda y ajustá sus parámetros; el gráfico se dibuja "
+            "abajo a ancho completo. Pasá el mouse por la línea para ver los valores exactos.")
     # Fila de controles: indicador a la izquierda, parámetros en columnas a la
     # derecha (sin vacío negro). El gráfico va a ancho COMPLETO debajo.
     ctl_ind, ctl_par = st.columns([1, 3])
@@ -1752,6 +1832,16 @@ with tab_tech:
 # TAB · FUNDAMENTALES
 # ──────────────────────────────────────────────────────────────────────────────
 with tab_fund:
+    with st.expander("📖 ¿Cómo leer esta pestaña?"):
+        st.markdown(
+            "**Análisis fundamental (Clase 1):** mira el VALOR del negocio (estados contables y "
+            "ratios), no el gráfico de precios.\n\n"
+            "- **Múltiplos (P/E, EV/EBITDA, P/B):** cuánto pagás por cada $1 de ganancia, EBITDA o "
+            "patrimonio. Más bajo = más 'barata' (pero ojo: barato puede esconder problemas).\n"
+            "- **Rentabilidad (ROE, márgenes):** qué tan eficiente es la empresa generando ganancias.\n"
+            "- **Apalancamiento (Debt/Equity):** cuánta deuda usa. Alto = más riesgo financiero.\n\n"
+            "Compará cada ratio ENTRE empresas y contra el promedio del sector — un múltiplo solo, "
+            "aislado, dice poco.")
     st.caption("ℹ️ Datos de “foto”: ratios TTM (últimos 12 meses) y estados contables del "
                "último reporte. **No dependen del período del sidebar** — ese control no afecta este tab.")
     sub1, sub2 = st.tabs(["RATIOS TTM", "STATEMENTS"])
@@ -1764,7 +1854,7 @@ with tab_fund:
         if df_ratios is None or df_ratios.empty:
             st.warning("FMP returned no ratios for the requested tickers.")
         else:
-            st.dataframe(df_ratios.round(2), use_container_width=True)
+            st.dataframe(df_ratios.round(2), width="stretch")
 
             ratios_list = list(df_ratios.index)
             fig = make_subplots(rows=2, cols=2, subplot_titles=ratios_list,
@@ -1808,7 +1898,7 @@ with tab_fund:
             num_cols = df_view.select_dtypes(include=[np.number]).columns
             for c in num_cols:
                 df_view[c] = df_view[c].apply(fnd.format_amount)
-            st.dataframe(df_view, use_container_width=True, hide_index=True)
+            st.dataframe(df_view, width="stretch", hide_index=True)
 
             # Botón para descargar Excel
             import io
@@ -1906,7 +1996,7 @@ with tab_theory:
             }, index=cov_a.index)
             diag["Volatility (σ)"] = diag["Volatility (σ)"].apply(lambda v: f"{v:.2%}")
             diag["Variance (σ²)"] = diag["Variance (σ²)"].apply(lambda v: f"{v:.4f}")
-            st.dataframe(diag, use_container_width=True)
+            st.dataframe(diag, width="stretch")
 
             st.caption(
                 "Variance on the diagonal · Covariance off-diagonal · "
@@ -2039,7 +2129,7 @@ with tab_theory:
             dist_rows.append({"From → To": "P1 → Identity (independence)", "Distance": id_dist})
             dist_df = pd.DataFrame(dist_rows)
             dist_df["Distance"] = dist_df["Distance"].apply(lambda v: f"{v:.4f}")
-            st.dataframe(dist_df, use_container_width=True, hide_index=True)
+            st.dataframe(dist_df, width="stretch", hide_index=True)
             st.caption(
                 "‖A − B‖_F = √Σ(aᵢⱼ − bᵢⱼ)². Distance to the identity matrix gives "
                 "a reference scale: closer to 0 means more stable correlation structure."
@@ -2100,7 +2190,7 @@ with tab_theory:
                     for c in ["annual_return", "annual_vol", "capm_return", "alpha"]:
                         df_show[c] = df_show[c].apply(lambda v: f"{v:+.2%}")
                     df_show["beta"] = df_show["beta"].apply(lambda v: f"{v:.3f}")
-                    st.dataframe(df_show, use_container_width=True)
+                    st.dataframe(df_show, width="stretch")
 
                     mkt_return = pt.annualize_return_from_daily(rets_bm[benchmark])
                     mkt_premium = mkt_return - rf_capm
@@ -2204,10 +2294,10 @@ with tab_theory:
 
                 # KPIs del tangente
                 k1, k2, k3, k4 = st.columns(4)
-                k1.metric("TANGENT RETURN", f"{tan['return']:+.2%}")
-                k2.metric("TANGENT VOL", f"{tan['vol']:.2%}")
-                k3.metric("SHARPE", f"{tan['sharpe']:.3f}")
-                k4.metric("CONSTRAINT", f"[{bound_min:.0%}, {bound_max:.0%}]")
+                k1.metric("TANGENT RETURN", f"{tan['return']:+.2%}", help=HELP["tan_return"])
+                k2.metric("TANGENT VOL", f"{tan['vol']:.2%}", help=HELP["tan_vol"])
+                k3.metric("SHARPE", f"{tan['sharpe']:.3f}", help=HELP["sharpe"])
+                k4.metric("CONSTRAINT", f"[{bound_min:.0%}, {bound_max:.0%}]", help=HELP["constraint"])
 
                 # Chart principal: nube MC + frontera SLSQP + CML + tangente
                 fig_fr = go.Figure()
@@ -2375,9 +2465,9 @@ with tab_theory:
             if tan_up is not None and ef_up is not None:
                 # KPIs
                 ku1, ku2, ku3, ku4 = st.columns(4)
-                ku1.metric("TANGENT RETURN", f"{tan_up['return']:+.2%}")
-                ku2.metric("TANGENT VOL", f"{tan_up['vol']:.2%}")
-                ku3.metric("SHARPE", f"{tan_up['sharpe']:.3f}")
+                ku1.metric("TANGENT RETURN", f"{tan_up['return']:+.2%}", help=HELP["tan_return"])
+                ku2.metric("TANGENT VOL", f"{tan_up['vol']:.2%}", help=HELP["tan_vol"])
+                ku3.metric("SHARPE", f"{tan_up['sharpe']:.3f}", help=HELP["sharpe"])
                 top1 = max(tan_up["weights"])
                 ku4.metric("MAX CONCENTRATION", f"{top1:.0%}",
                             help="Largest single-asset weight. >50% indicates extreme "
@@ -2462,6 +2552,18 @@ with tab_theory:
 # TAB · PORTFOLIO
 # ──────────────────────────────────────────────────────────────────────────────
 with tab_port:
+    with st.expander("📖 ¿Cómo leer esta pestaña?"):
+        st.markdown(
+            "**Teoría de carteras (Clase 3):** combinás activos para maximizar retorno por unidad "
+            "de riesgo (Markowitz / CAPM).\n\n"
+            "- **Curva de equity:** valor acumulado de la cartera con los pesos que elegiste. "
+            "Subiendo = ganando.\n"
+            "- **Drawdown:** la caída desde el último máximo, en todo momento. Mide el dolor; "
+            "mientras más cerca de 0, mejor.\n"
+            "- **Pie de pesos:** cómo está repartido el capital. Más parejo = más diversificado.\n"
+            "- **Matriz de correlación:** cuánto se mueven juntos los activos (ρ de −1 a +1). "
+            "Combinar activos POCO correlacionados es lo que baja el riesgo total.\n\n"
+            "Las métricas de arriba (Sharpe, Vol, Max DD) tienen un ⓘ con su definición.")
     st.markdown("##### PORTFOLIO BUILDER")
 
     st.markdown("**WEIGHTS (%)**")
@@ -2494,10 +2596,10 @@ with tab_port:
         ann_vol = port_ret.std() * np.sqrt(252)
         sharpe = (port_ret.mean() * 252) / ann_vol if ann_vol > 0 else 0
         dd = (port_cum / port_cum.cummax() - 1).min()
-        c1.metric("TOTAL RETURN", f"{ret_total * 100:+.2f}%")
-        c2.metric("ANN. VOL", f"{ann_vol * 100:.2f}%")
-        c3.metric("SHARPE (rf=0)", f"{sharpe:.2f}")
-        c4.metric("MAX DD", f"{dd * 100:.2f}%")
+        c1.metric("TOTAL RETURN", f"{ret_total * 100:+.2f}%", help=HELP["ret_total"])
+        c2.metric("ANN. VOL", f"{ann_vol * 100:.2f}%", help=HELP["vol"])
+        c3.metric("SHARPE (rf=0)", f"{sharpe:.2f}", help=HELP["sharpe"])
+        c4.metric("MAX DD", f"{dd * 100:.2f}%", help=HELP["max_dd"])
 
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=port_cum.index, y=port_cum.values, name="Portfolio",
@@ -2546,6 +2648,18 @@ with tab_risk:
 
     # ═══ VaR / CVaR ═══════════════════════════════════════════════════════
     with sub_var:
+        with st.expander("📖 ¿Cómo leer esta pestaña?"):
+            st.markdown(
+                "**Riesgo de cola (Clase 4):** cuánto podés perder en un día malo.\n\n"
+                "- **VaR (Value at Risk):** la pérdida que NO se supera con cierta confianza. "
+                "Ej. VaR 95% = USD 1.000 → 'el 95% de los días no perdés más de $1.000'. Es un "
+                "piso típico, **no** el peor caso.\n"
+                "- **CVaR (Expected Shortfall):** el promedio de pérdidas en el peor 5% (la cola "
+                "que el VaR deja afuera). Responde '¿y cuando se pone feo de verdad?'. Siempre ≥ VaR.\n\n"
+                "Se calcula por **3 métodos**: paramétrico (asume normal), histórico (usa la "
+                "distribución real pasada) y Monte Carlo (simula miles de escenarios desde una "
+                "Normal multivariada). Que difieran te muestra cuánto dependen del supuesto de "
+                "distribución — el histórico capta colas gordas que el paramétrico subestima.")
         st.markdown("##### VALUE AT RISK · PARAMÉTRICO · HISTÓRICO · MONTE CARLO")
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -2638,6 +2752,20 @@ with tab_risk:
 
     # ═══ PERFORMANCE ATTRIBUTION ══════════════════════════════════════════
     with sub_attr:
+        with st.expander("📖 ¿Cómo leer esta pestaña?"):
+            st.markdown(
+                "**Atribución Brinson (Clase 4):** descompone POR QUÉ tu cartera le ganó (o perdió) "
+                "al benchmark, sector por sector. La tabla de abajo es **editable** — son datos de "
+                "ejemplo para que juegues; cambialos por los de tu cartera y se recalcula todo.\n\n"
+                "- **Asignación:** ganaste/perdiste por sobreponderar (o subponderar) sectores "
+                "respecto del benchmark.\n"
+                "- **Selección:** ganaste/perdiste por elegir, DENTRO de un sector, activos que "
+                "rindieron distinto al sector del benchmark.\n"
+                "- **Interacción:** el cruce de las dos (BHB la separa; BF la reparte dentro de "
+                "asignación + selección).\n\n"
+                "**Por eso un sector puede aparecer en CERO:** si su peso y su retorno son iguales "
+                "en cartera y benchmark, no aportó nada al exceso. Está bien calculado, no es un bug. "
+                "Ambos métodos (BHB y BF) suman exactamente el mismo exceso total.")
         st.markdown("##### BRINSON — ATRIBUCIÓN DE EXCESO DE RETORNO (BHB vs BF)")
         st.caption("Editá los pesos y retornos por sector de cartera y benchmark. "
                    "BHB descompone en Asignación + Selección + Interacción; "
@@ -2650,7 +2778,7 @@ with tab_risk:
             "Peso Benchmark": [0.55, 0.20, 0.25],
             "Retorno Benchmark": [0.045, 0.030, 0.020],
         })
-        edited = st.data_editor(default_attr, num_rows="dynamic", use_container_width=True,
+        edited = st.data_editor(default_attr, num_rows="dynamic", width="stretch",
                                 key="attr_editor")
         edited = edited.dropna()
         sw_p, sw_b = edited["Peso Cartera"].sum(), edited["Peso Benchmark"].sum()
@@ -2667,9 +2795,11 @@ with tab_risk:
             df_bf, tf = ra.bf_attribution(sec, wp, rp, wb, rb)
 
             k1, k2, k3 = st.columns(3)
-            k1.metric("RETORNO CARTERA", f"{tb['R_P']:+.2%}")
-            k2.metric("RETORNO BENCHMARK", f"{tb['R_B']:+.2%}")
-            k3.metric("EXCESO", f"{tb['exceso']:+.2%}")
+            k1.metric("RETORNO CARTERA", f"{tb['R_P']:+.2%}",
+                      help="Retorno total de tu cartera (suma ponderada de pesos × retornos por sector).")
+            k2.metric("RETORNO BENCHMARK", f"{tb['R_B']:+.2%}",
+                      help="Retorno del índice de referencia con sus propios pesos por sector.")
+            k3.metric("EXCESO", f"{tb['exceso']:+.2%}", help=HELP["exceso"])
 
             cc1, cc2 = st.columns(2)
             with cc1:
@@ -2704,7 +2834,7 @@ with tab_risk:
                             "BF Asig", "BF Sel"]
             for c in show.columns[1:]:
                 show[c] = show[c].apply(lambda v: f"{v:+.4%}")
-            st.dataframe(show, use_container_width=True, hide_index=True)
+            st.dataframe(show, width="stretch", hide_index=True)
             st.caption("La asignación BF puede tener signo OPUESTO a la BHB para un mismo "
                        "sector: BF premia sobreponderar sectores que superan al benchmark "
                        "TOTAL, no solo los de retorno positivo.")
@@ -2714,6 +2844,20 @@ with tab_risk:
 # TAB · STRATEGY LAB  ·  Clase 5 — Backtesting & Machine Learning
 # ──────────────────────────────────────────────────────────────────────────────
 with tab_lab:
+    with st.expander("📖 ¿Cómo leer esta pestaña?"):
+        st.markdown(
+            "**Backtesting & ML (Clase 5):** probás una estrategia sobre datos del PASADO para ver "
+            "si habría funcionado. Es una evaluación retrospectiva, **no** una recomendación de qué "
+            "hacer mañana.\n\n"
+            "- **Tu estrategia vs Buy & Hold:** la línea de la estrategia es seguir sus señales; "
+            "Buy & Hold es mantener la canasta equiponderada quieta. Si la estrategia termina por "
+            "DEBAJO, no le ganó a simplemente mantener (lo más común, sobre todo tras costos).\n"
+            "- **In-sample vs Out-of-sample:** se optimiza en una parte (IS) y se evalúa en otra que "
+            "el modelo no vio (OOS). **Solo el OOS vale.** Si IS ≫ OOS → overfitting.\n"
+            "- **ML walk-forward:** reentrena día a día con la ventana previa y predice el siguiente "
+            "(sin mirar el futuro). El *accuracy* cerca de 50% confirma que predecir la dirección "
+            "diaria es casi una moneda al aire.\n\n"
+            "Cada métrica (CAGR, Sharpe, Overfitting Gap…) tiene su ⓘ con la definición.")
     st.markdown("##### BACKTESTING LAB · TREND · MEAN REVERSION · MOMENTUM · REBALANCEO · ML")
     cfg1, cfg2 = st.columns([3, 1])
     with cfg1:
@@ -2808,7 +2952,7 @@ with tab_lab:
                 styled = perf.copy()
                 for c in styled.columns:
                     styled[c] = styled[c].apply(lambda v: f"{v:.2f}" if pd.notna(v) else "—")
-                st.dataframe(styled, use_container_width=True)
+                st.dataframe(styled, width="stretch")
 
             def _mc_hist(mc, label):
                 fig = go.Figure()
@@ -2838,10 +2982,12 @@ with tab_lab:
                     r = _run(stg.backtest_sma_lma, port, cost=cost, is_frac=is_frac)
                 ma1, ma2 = r["params"]
                 k1, k2, k3 = st.columns(3)
-                k1.metric("SMA / LMA óptimos", f"{ma1} / {ma2}")
-                k2.metric("CAGR OOS", f"{r['cagr_oos'] * 100:+.2f}%")
-                k3.metric("Overfitting Gap", f"{r['gap'] * 100:+.1f} pp",
-                          help="CAGR_IS − CAGR_OOS. >15pp sugiere overfitting.")
+                k1.metric("SMA / LMA óptimos", f"{ma1} / {ma2}",
+                          help="Ventanas de media móvil corta (SMA) y larga (LMA) que mejor "
+                               "anduvieron in-sample. La señal compra cuando la corta cruza por "
+                               "encima de la larga (golden cross) y sale en el cruce inverso.")
+                k2.metric("CAGR OOS", f"{r['cagr_oos'] * 100:+.2f}%", help=HELP["cagr_oos"])
+                k3.metric("Overfitting Gap", f"{r['gap'] * 100:+.1f} pp", help=HELP["overfit_gap"])
                 _show_perf(r["perf"])
                 st.plotly_chart(_equity_dd(r["df"], r["dd"], "CUM_STRATEGY", "CUM_BH",
                                            r["label"], r["buys"], r["sells"],
@@ -2861,9 +3007,9 @@ with tab_lab:
                     r = _run(stg.backtest_rsi, port, window=int(rsi_win), oversold=int(osold),
                              overbought=int(obought), cost=cost, is_frac=is_frac)
                 k1, k2, k3 = st.columns(3)
-                k1.metric("Operaciones", r["n_trades"])
-                k2.metric("Días en mercado", f"{r['days_in']}/{r['n_total']}")
-                k3.metric("CAGR", f"{r['perf'].iloc[0]['CAGR %']:+.2f}%")
+                k1.metric("Operaciones", r["n_trades"], help=HELP["n_trades"])
+                k2.metric("Días en mercado", f"{r['days_in']}/{r['n_total']}", help=HELP["days_in"])
+                k3.metric("CAGR", f"{r['perf'].iloc[0]['CAGR %']:+.2f}%", help=HELP["cagr"])
                 _show_perf(r["perf"])
                 fig = _equity_dd(r["df"], r["dd"], "CUM_STRATEGY", "CUM_BH", r["label"],
                                  r["buys"], r["sells"], "Compra RSI<os", "Venta RSI>ob")
@@ -2885,8 +3031,8 @@ with tab_lab:
                 with st.spinner("Backtest Momentum..."):
                     r = _run(stg.backtest_momentum, port, window=int(mwin), cost=cost, is_frac=is_frac)
                 k1, k2 = st.columns(2)
-                k1.metric("Cambios de señal", r["n_trades"])
-                k2.metric("CAGR", f"{r['perf'].iloc[0]['CAGR %']:+.2f}%")
+                k1.metric("Cambios de señal", r["n_trades"], help=HELP["n_trades"])
+                k2.metric("CAGR", f"{r['perf'].iloc[0]['CAGR %']:+.2f}%", help=HELP["cagr"])
                 _show_perf(r["perf"])
                 st.plotly_chart(_equity_dd(r["df"], r["dd"], "CUM_STRATEGY", "CUM_BH",
                                            r["label"], r["buys"], r["sells"], "Long", "Short"),
@@ -2910,8 +3056,10 @@ with tab_lab:
                 with st.spinner("Simulando rebalanceo..."):
                     r = _run(stg.backtest_rebalanceo, adj, wts, freq=freq, cost=cost, is_frac=is_frac)
                 k1, k2 = st.columns(2)
-                k1.metric("Rebalanceos ejecutados", r["n_rebal"])
-                k2.metric("Costos acumulados", f"{r['cost_acum'] / r['capital'] * 100:.3f}%")
+                k1.metric("Rebalanceos ejecutados", r["n_rebal"],
+                          help="Veces que se volvió a llevar la cartera a sus pesos objetivo en el período.")
+                k2.metric("Costos acumulados", f"{r['cost_acum'] / r['capital'] * 100:.3f}%",
+                          help="Suma de costos de transacción pagados por rebalancear, como % del capital.")
                 _show_perf(r["perf"])
                 fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
                                     row_heights=[0.72, 0.28], vertical_spacing=0.04)
@@ -2954,7 +3102,7 @@ with tab_lab:
                     st.caption("Reentrena el modelo cada día con los últimos N días y predice el "
                                "siguiente; opera la cartera entera o va a cash. XGBoost/SVM tardan "
                                "~1 min la primera vez (después queda cacheado).")
-                    if st.button("▶ CORRER WALK-FORWARD", key="ml_run", use_container_width=True):
+                    if st.button("▶ CORRER WALK-FORWARD", key="ml_run", width="stretch"):
                         st.session_state["_ml_go"] = True
                     if st.session_state.get("_ml_go"):
                         with st.spinner(f"Entrenando {model_choice} en walk-forward…"):
@@ -2966,10 +3114,10 @@ with tab_lab:
                             st.error("No hay datos suficientes.")
                         else:
                             k1, k2, k3, k4 = st.columns(4)
-                            k1.metric("Accuracy", f"{r['acc']:.3f}")
-                            k2.metric("CAGR ML", f"{r['perf'].iloc[0]['CAGR %']:+.2f}%")
-                            k3.metric("Cambios posición", r["n_trades"])
-                            k4.metric("Días invertido", f"{r['days_in']}/{r['n_total']}")
+                            k1.metric("Accuracy", f"{r['acc']:.3f}", help=HELP["accuracy"])
+                            k2.metric("CAGR ML", f"{r['perf'].iloc[0]['CAGR %']:+.2f}%", help=HELP["cagr"])
+                            k3.metric("Cambios posición", r["n_trades"], help=HELP["n_trades"])
+                            k4.metric("Días invertido", f"{r['days_in']}/{r['n_total']}", help=HELP["days_in"])
                             _show_perf(r["perf"])
                             st.plotly_chart(_equity_dd(r["df"], r["dd"], "CUM_ML", "CUM_BH", r["label"]),
                                             width="stretch", config=PLOTLY_CONFIG)
@@ -3013,7 +3161,7 @@ with tab_lab:
                         st.caption("Entrena un modelo POR ACCIÓN cada día → P(sube). Arma la cartera por "
                                    "convicción (∝ p−0.5), con cap por activo, y rota día a día. Costo por "
                                    "turnover real. Es lo más pesado (N acciones × N días de modelos).")
-                        if st.button("▶ CORRER ROTACIÓN ML", key="mlw_run", use_container_width=True):
+                        if st.button("▶ CORRER ROTACIÓN ML", key="mlw_run", width="stretch"):
                             st.session_state["_mlw_go"] = True
                         if st.session_state.get("_mlw_go"):
                             with st.spinner(f"Entrenando {w_model} por activo en walk-forward… "
@@ -3027,10 +3175,10 @@ with tab_lab:
                                 st.error("No hay datos suficientes.")
                             else:
                                 k1, k2, k3, k4 = st.columns(4)
-                                k1.metric("CAGR", f"{r['perf'].iloc[0]['CAGR %']:+.2f}%")
-                                k2.metric("Sharpe", f"{r['perf'].iloc[0]['Sharpe']:.2f}")
-                                k3.metric("Turnover diario", f"{r['turnover_medio']*100:.0f}%")
-                                k4.metric("% invertido medio", f"{r['invertido_medio']*100:.0f}%")
+                                k1.metric("CAGR", f"{r['perf'].iloc[0]['CAGR %']:+.2f}%", help=HELP["cagr"])
+                                k2.metric("Sharpe", f"{r['perf'].iloc[0]['Sharpe']:.2f}", help=HELP["sharpe"])
+                                k3.metric("Turnover diario", f"{r['turnover_medio']*100:.0f}%", help=HELP["turnover"])
+                                k4.metric("% invertido medio", f"{r['invertido_medio']*100:.0f}%", help=HELP["invertido"])
                                 _show_perf(r["perf"])
                                 st.plotly_chart(_equity_dd(r["df"], r["dd"], "CUM_ML", "CUM_BH", r["label"]),
                                                 width="stretch", config=PLOTLY_CONFIG)
@@ -3052,7 +3200,7 @@ with tab_lab:
                                     st.markdown("**PESO MEDIO POR ACTIVO (en cartera)**")
                                     pm = r["peso_medio"].sort_values(ascending=False)
                                     st.dataframe(pm.rename("Peso medio %").to_frame(),
-                                                 use_container_width=True)
+                                                 width="stretch")
                                     st.caption(f"Costo total acumulado: {r['costo_total']*100:.2f}% del capital.")
                                 with cc2:
                                     st.markdown("**RIESGO SIMULADO — MONTE CARLO**")
